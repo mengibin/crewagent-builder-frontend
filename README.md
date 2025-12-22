@@ -1,3 +1,30 @@
+# CrewAgent Builder Frontend
+
+Next.js (App Router) + TypeScript + Tailwind CSS。
+
+## Requirements
+
+- Node.js `>= 20.9.0`（见 `.nvmrc` / `package.json#engines`）
+
+## 启动（开发）
+
+```bash
+npm install
+cp .env.local.example .env.local
+npm run dev
+```
+
+访问：`http://127.0.0.1:3000`
+
+## 常用命令
+
+```bash
+npm run lint
+npm run build
+```
+
+---
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
