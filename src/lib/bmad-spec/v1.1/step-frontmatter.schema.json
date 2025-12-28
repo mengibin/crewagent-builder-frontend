@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crewagent.local/schemas/step-frontmatter.schema.json",
+  "title": "CrewAgent step-xx.md Frontmatter",
+  "type": "object",
+  "required": ["schemaVersion", "nodeId", "type"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.1(\\.\\d+)?$"
+    },
+    "nodeId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["step", "decision", "merge", "end", "subworkflow"]
+    },
+    "title": { "type": "string" },
+    "agentId": { "type": "string" },
+    "inputs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "outputs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "setsVariables": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["to", "label"],
+        "properties": {
+          "to": { "type": "string" },
+          "label": { "type": "string" },
+          "isDefault": { "type": "boolean", "default": false },
+          "conditionText": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    }
+  },
+  "additionalProperties": true
+}
+

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crewagent.local/schemas/workflow-frontmatter.schema.json",
+  "title": "CrewAgent workflow.md Frontmatter",
+  "type": "object",
+  "required": ["schemaVersion", "workflowType", "stepsCompleted", "currentNodeId"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.1(\\.\\d+)?$"
+    },
+    "workflowType": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string" },
+    "project_name": { "type": "string" },
+    "user_name": { "type": "string" },
+    "date": { "type": "string" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "currentNodeId": {
+      "type": "string",
+      "description": "Current node id. Empty string allowed before first step starts."
+    },
+    "stepsCompleted": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "variables": {
+      "type": "object",
+      "description": "Decision variables used by branching conditions.",
+      "additionalProperties": true,
+      "default": {}
+    },
+    "decisionLog": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "label"],
+        "properties": {
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "label": { "type": "string" },
+          "reason": { "type": "string" },
+          "decidedAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "artifacts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    }
+  },
+  "additionalProperties": true
+}
+

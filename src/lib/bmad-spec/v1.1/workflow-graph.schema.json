@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crewagent.local/schemas/workflow-graph.schema.json",
+  "title": "CrewAgent Workflow Graph",
+  "type": "object",
+  "required": ["schemaVersion", "entryNodeId", "nodes", "edges"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.1(\\.\\d+)?$"
+    },
+    "entryNodeId": { "$ref": "#/$defs/nodeId" },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "minItems": 0,
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nodeId": {
+      "type": "string",
+      "description": "Stable node identifier. Recommended: step-01, decide-02, merge-03, end-99.",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "description": "Relative path inside the .bmad zip (POSIX-style preferred).",
+      "minLength": 1
+    },
+    "nodeType": {
+      "type": "string",
+      "enum": ["step", "decision", "merge", "end", "subworkflow"]
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "file"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nodeId" },
+        "type": { "$ref": "#/$defs/nodeType" },
+        "file": { "$ref": "#/$defs/relativePath" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "agentId": { "type": "string" },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "label"],
+      "properties": {
+        "id": { "type": "string" },
+        "from": { "$ref": "#/$defs/nodeId" },
+        "to": { "$ref": "#/$defs/nodeId" },
+        "label": { "type": "string", "minLength": 1 },
+        "isDefault": { "type": "boolean", "default": false },
+        "conditionText": {
+          "type": "string",
+          "description": "Human/LLM readable condition (e.g., variables.projectType == 'greenfield')."
+        },
+        "conditionExpr": {
+          "type": "object",
+          "description": "Optional machine-evaluable condition (recommended: JSONLogic object).",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
+

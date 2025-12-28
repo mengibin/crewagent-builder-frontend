@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crewagent.local/schemas/bmad.schema.json",
+  "title": "CrewAgent .bmad Package Manifest",
+  "type": "object",
+  "required": ["schemaVersion", "name", "version", "entry"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "description": "Spec version for this package format.",
+      "pattern": "^1\\.1(\\.\\d+)?$"
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "description": "SemVer string.",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "entry": {
+      "type": "object",
+      "required": ["workflow", "graph", "agents"],
+      "properties": {
+        "workflow": { "type": "string", "default": "workflow.md" },
+        "graph": { "type": "string", "default": "workflow.graph.json" },
+        "agents": { "type": "string", "default": "agents.json" },
+        "assetsDir": { "type": "string", "default": "assets/" }
+      },
+      "additionalProperties": false
+    },
+    "workflows": {
+      "type": "array",
+      "description": "Optional workflow index for multi-workflow packages. When present, Runtime can list/select workflows without scanning the zip.",
+      "items": {
+        "type": "object",
+        "required": ["id", "workflow", "graph"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable workflow identifier (also used in UI).",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "displayName": { "type": "string" },
+          "description": { "type": "string" },
+          "workflow": { "type": "string" },
+          "graph": { "type": "string" },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "minRuntimeVersion": { "type": "string" },
+        "requiresNetwork": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "integrity": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "description": "Optional SHA-256 of the ZIP bytes (hex).",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
