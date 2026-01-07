@@ -8,12 +8,14 @@ import type { ErrorObject } from "ajv";
 import Ajv2020 from "ajv/dist/2020";
 
 import { clearAccessToken } from "@/lib/auth";
-import { parseAssetsJson, toRuntimeAssetPath } from "@/lib/assets-v11";
+import { parseAssetsJson } from "@/lib/assets-v11";
 import workflowGraphSchemaV11 from "@/lib/bmad-spec/v1.1/workflow-graph.schema.json";
 import { getApiBaseUrl, getJson, putJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import { isValidAgentId, uniqueAgentId } from "@/lib/utils";
 import { buildWorkflowGraphV11 } from "@/lib/workflow-graph-v11";
+import { parseStepMarkdown, serializeStepMarkdown, type StepSections } from "@/lib/step-parser";
+import { StepEditorPanel } from "@/components/StepEditorPanel";
 
 import type { Edge, Node } from "reactflow";
 import ReactFlow, {
@@ -59,6 +61,8 @@ type WorkflowNodeData = {
   outputs: string[];
   setsVariables: string[];
   subworkflowId?: number | null;
+  goal?: string;
+  completion?: string;
 };
 
 type ProjectAgent = {
@@ -68,6 +72,44 @@ type ProjectAgent = {
   icon: string;
   role: string;
 };
+
+function stripMarkdownPreview(markdown: string): string {
+  const raw = markdown ?? "";
+  if (!raw.trim()) return "";
+
+  let text = raw;
+
+  // Drop fenced code blocks completely (too noisy for node cards).
+  text = text.replace(/```[\s\S]*?```/g, " ");
+
+  // Links: [text](url) -> text
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+
+  // Inline code: `code` -> code
+  text = text.replace(/`([^`]+)`/g, "$1");
+
+  // Headings, quotes, lists
+  text = text.replace(/^#{1,6}\s+/gm, "");
+  text = text.replace(/^>\s+/gm, "");
+  text = text.replace(/^\s*([-*+]|\d+\.)\s+/gm, "");
+
+  // Basic emphasis markers
+  text = text.replace(/\*\*(.*?)\*\*/g, "$1");
+  text = text.replace(/__(.*?)__/g, "$1");
+  text = text.replace(/\*(.*?)\*/g, "$1");
+  text = text.replace(/_(.*?)_/g, "$1");
+
+  // Collapse whitespace
+  text = text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
+function truncateWithDots(text: string, maxChars: number): string {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxChars)).trimEnd()}...`;
+}
 
 function StepNode({
   data,
@@ -93,30 +135,35 @@ function StepNode({
         ? "bg-sky-50 text-sky-800"
         : nodeType === "end"
           ? "bg-rose-50 text-rose-800"
-          : nodeType === "subworkflow"
+      : nodeType === "subworkflow"
             ? "bg-violet-50 text-violet-800"
             : "bg-zinc-100 text-zinc-700";
   return (
-    <div className="min-w-44 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm">
+    <div className="w-80 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm">
       <Handle type="target" position={Position.Top} />
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide">
             <span className={`rounded-full px-2 py-0.5 ${accent}`}>{label}</span>
           </p>
-          <p className="mt-2 text-sm font-semibold text-zinc-950">{data.title}</p>
+          <p className="mt-2 line-clamp-2 text-sm font-semibold leading-snug text-zinc-950">{data.title}</p>
         </div>
         {data.agentId ? (
-          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700">
+          <span
+            title={agent ? `${agent.icon || "🧩"} ${agent.title || agent.name}` : `${data.agentId} (missing)`}
+            className="max-w-36 truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700"
+          >
             {agent ? `${agent.icon || "🧩"} ${agent.title || agent.name}` : `${data.agentId} (missing)`}
           </span>
         ) : null}
       </div>
-      {data.instructions ? (
-        <p className="mt-2 line-clamp-3 text-xs text-zinc-600">{data.instructions}</p>
-      ) : (
-        <p className="mt-2 text-xs text-zinc-400">Click to edit…</p>
-      )}
+      {(() => {
+        const goalPreview = stripMarkdownPreview(data.goal ?? "");
+        const fallback = stripMarkdownPreview(data.instructions ?? "");
+        const snippet = truncateWithDots(goalPreview || fallback, 24);
+        if (!snippet) return <p className="mt-2 text-xs text-zinc-400">Click to edit…</p>;
+        return <p className="mt-2 line-clamp-2 text-xs text-zinc-600">{snippet}</p>;
+      })()}
       {nodeType === "end" ? null : <Handle type="source" position={Position.Bottom} />}
     </div>
   );
@@ -184,9 +231,9 @@ function parseProjectAgentsJson(raw: string): { agents: ProjectAgent[]; error: s
       return { agents, error: null };
     }
 
-    return { agents: [], error: "agentsJson 格式不正确（应为 v1.1 manifest 或数组）" };
+    return { agents: [], error: "Invalid agentsJson format (expected a v1.1 manifest or an array)." };
   } catch {
-    return { agents: [], error: "agents.json 解析失败（非法 JSON）" };
+    return { agents: [], error: "Failed to parse agents.json (invalid JSON)." };
   }
 }
 
@@ -234,6 +281,8 @@ function graphSignatureFor(nodes: Node<WorkflowNodeData>[], edges: Edge<Workflow
         inputs: Array.isArray(n.data?.inputs) ? n.data.inputs : [],
         outputs: Array.isArray(n.data?.outputs) ? n.data.outputs : [],
         setsVariables: Array.isArray(n.data?.setsVariables) ? n.data.setsVariables : [],
+        goal: n.data?.goal ?? "",
+        completion: n.data?.completion ?? "",
         ...(typeof n.data?.subworkflowId === "number" ? { subworkflowId: n.data.subworkflowId } : {}),
       },
     }))
@@ -307,7 +356,7 @@ function parseGraphJson(
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {
         graph: { nodes: [], edges: [] },
-        error: "graphJson 格式不正确（应为对象）",
+        error: "Invalid graphJson format (expected an object).",
         unmappedAgentRefs: [],
         legacyAgentMigrationCount: 0,
         signatureBeforeMigration: emptySignature,
@@ -345,7 +394,10 @@ function parseGraphJson(
         inputs: string[];
         outputs: string[];
         setsVariables: string[];
+
         subworkflowId?: number | null;
+        goal?: string;
+        completion?: string;
       };
     }> = [];
 
@@ -364,6 +416,8 @@ function parseGraphJson(
         const legacyName = typeof dataObj?.name === "string" ? dataObj.name : "";
         const title = (titleRaw || legacyName || id || "Untitled").trim() || "Untitled";
         const instructions = typeof dataObj?.instructions === "string" ? dataObj.instructions : "";
+        const goal = typeof dataObj?.goal === "string" ? dataObj.goal : "";
+        const completion = typeof dataObj?.completion === "string" ? dataObj.completion : "";
         const agentIdRaw = typeof dataObj?.agentId === "string" ? dataObj.agentId : "";
         const legacyAgentRaw = typeof dataObj?.agent === "string" ? dataObj.agent : "";
         const mappedLegacyId = legacyAgentRaw ? resolveAgentId(legacyAgentRaw) : "";
@@ -388,6 +442,8 @@ function parseGraphJson(
             inputs,
             outputs,
             setsVariables,
+            goal,
+            completion,
             ...(subworkflowId !== null ? { subworkflowId } : {}),
           },
         });
@@ -403,6 +459,8 @@ function parseGraphJson(
             inputs,
             outputs,
             setsVariables,
+            goal,
+            completion,
             ...(subworkflowId !== null ? { subworkflowId } : {}),
           },
         } as Node<WorkflowNodeData>;
@@ -546,7 +604,7 @@ function parseGraphJson(
   } catch {
     return {
       graph: { nodes: [], edges: [] },
-      error: "graphJson 解析失败（非法 JSON）",
+      error: "Failed to parse graphJson (invalid JSON).",
       unmappedAgentRefs: [],
       legacyAgentMigrationCount: 0,
       signatureBeforeMigration: emptySignature,
@@ -562,7 +620,7 @@ function parseStepFilesJson(raw: string): { files: Record<string, string>; error
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { files: {}, error: "stepFilesJson 格式不正确（应为对象）" };
+      return { files: {}, error: "Invalid stepFilesJson format (expected an object)." };
     }
     const obj = parsed as Record<string, unknown>;
     const files: Record<string, string> = {};
@@ -571,8 +629,50 @@ function parseStepFilesJson(raw: string): { files: Record<string, string>; error
     }
     return { files, error: null };
   } catch {
-    return { files: {}, error: "stepFilesJson 解析失败（非法 JSON）" };
+    return { files: {}, error: "Failed to parse stepFilesJson (invalid JSON)." };
   }
+}
+
+function applyStepFilesToNodes(
+  nodes: Node<WorkflowNodeData>[],
+  stepFiles: Record<string, string>,
+): Node<WorkflowNodeData>[] {
+  const parsedByNodeId = new Map<string, ReturnType<typeof parseStepMarkdown>["data"]>();
+
+  for (const content of Object.values(stepFiles)) {
+    if (typeof content !== "string") continue;
+    const parsed = parseStepMarkdown(content);
+    if (!parsed.success || !parsed.data) continue;
+    const nodeId = parsed.data.frontmatter?.nodeId;
+    if (typeof nodeId !== "string" || !nodeId.trim()) continue;
+    parsedByNodeId.set(nodeId.trim(), parsed.data);
+  }
+
+  if (!parsedByNodeId.size) return nodes;
+
+  return nodes.map((node) => {
+    const step = parsedByNodeId.get(node.id);
+    if (!step) return node;
+    const fm = step.frontmatter;
+    const sections = step.sections ?? ({ goal: "", instructions: "" } as StepSections);
+    const nextType = isWorkflowNodeType(fm.type) ? fm.type : node.type;
+
+    return {
+      ...node,
+      type: nextType,
+      data: {
+        ...node.data,
+        title: fm.title?.trim() || node.data?.title || node.id,
+        agentId: fm.agentId?.trim() || "",
+        inputs: Array.isArray(fm.inputs) ? fm.inputs : [],
+        outputs: Array.isArray(fm.outputs) ? fm.outputs : [],
+        setsVariables: Array.isArray(fm.setsVariables) ? fm.setsVariables : [],
+        goal: sections.goal ?? "",
+        instructions: sections.instructions ?? "",
+        completion: sections.completion ?? "",
+      },
+    };
+  });
 }
 
 function parseArtifactsJson(raw: string): { dirs: string[]; error: string | null } {
@@ -581,7 +681,7 @@ function parseArtifactsJson(raw: string): { dirs: string[]; error: string | null
 
   try {
     const parsed = JSON.parse(trimmed) as unknown;
-    if (!Array.isArray(parsed)) return { dirs: [], error: "artifactsJson 格式不正确（应为数组）" };
+    if (!Array.isArray(parsed)) return { dirs: [], error: "Invalid artifactsJson format (expected an array)." };
 
     const dirs = parsed
       .filter((v): v is string => typeof v === "string")
@@ -591,19 +691,20 @@ function parseArtifactsJson(raw: string): { dirs: string[]; error: string | null
 
     return { dirs, error: null };
   } catch {
-    return { dirs: [], error: "artifactsJson 解析失败（非法 JSON）" };
+    return { dirs: [], error: "Failed to parse artifactsJson (invalid JSON)." };
   }
 }
 
 function normalizeArtifactsDir(input: string): { value: string | null; error: string | null } {
   const raw = input.trim().replace(/\\/g, "/");
-  if (!raw) return { value: null, error: "目录不能为空" };
-  if (raw.startsWith("/")) return { value: null, error: "目录必须是相对路径" };
+  if (!raw) return { value: null, error: "Directory cannot be empty." };
+  if (raw.startsWith("/")) return { value: null, error: "Directory must be a relative path." };
 
   const withoutPrefix = raw.replace(/^\.\/+/, "").replace(/^artifacts\/+/, "");
   const cleaned = withoutPrefix.replace(/^\/+/, "").replace(/\/+$/, "");
-  if (!cleaned) return { value: null, error: "目录不能为空" };
-  if (cleaned.split("/").some((part) => part === "..")) return { value: null, error: "目录不能包含 .." };
+  if (!cleaned) return { value: null, error: "Directory cannot be empty." };
+  if (cleaned.split("/").some((part) => part === ".."))
+    return { value: null, error: "Directory cannot contain '..'." };
 
   return { value: `artifacts/${cleaned}`, error: null };
 }
@@ -621,6 +722,8 @@ function graphForSave(nodes: Node<WorkflowNodeData>[], edges: Edge<WorkflowEdgeD
         inputs: Array.isArray(n.data?.inputs) ? n.data.inputs : [],
         outputs: Array.isArray(n.data?.outputs) ? n.data.outputs : [],
         setsVariables: Array.isArray(n.data?.setsVariables) ? n.data.setsVariables : [],
+        goal: n.data?.goal ?? "",
+        completion: n.data?.completion ?? "",
         ...(typeof n.data?.subworkflowId === "number" ? { subworkflowId: n.data.subworkflowId } : {}),
       },
     })),
@@ -722,6 +825,7 @@ function serializeWorkflowVariablesToFrontmatter(variables: WorkflowVariable[]):
 }
 
 export default function EditorPage() {
+
   const router = useRouter();
   const params = useParams<{ projectId: string; workflowId: string }>();
   const ready = useRequireAuth();
@@ -801,7 +905,6 @@ export default function EditorPage() {
   const [artifactsError, setArtifactsError] = useState<string | null>(null);
   const [assetsJsonRaw, setAssetsJsonRaw] = useState<string>("{}");
   const [assetsError, setAssetsError] = useState<string | null>(null);
-  const [assetInsertPath, setAssetInsertPath] = useState("");
 
   const [paletteOpen, setPaletteOpen] = useState(true);
 
@@ -812,6 +915,72 @@ export default function EditorPage() {
   const assetsParsed = useMemo(() => parseAssetsJson(assetsJsonRaw), [assetsJsonRaw]);
   const assetsList = assetsParsed.assets;
   const assetsParseError = assetsParsed.error;
+
+  const editorAgents = useMemo(() => projectAgents.map((a) => ({ id: a.id, name: a.name })), [projectAgents]);
+
+  const handleStepEditorChange = useCallback(
+    (newMd: string) => {
+      // Find the current selected node ID from closure or rely on state
+      // selectedNodeId is available in scope
+      if (!selectedNodeId) return;
+
+      const result = parseStepMarkdown(newMd);
+      if (!result.success || !result.data) {
+        return;
+      }
+      const { frontmatter, sections } = result.data;
+      const nextType = frontmatter.type as WorkflowNodeType | undefined;
+
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== selectedNodeId) return n;
+          return {
+            ...n,
+            type: nextType ?? n.type,
+            data: {
+              ...n.data,
+              title: frontmatter.title || n.data.title,
+              agentId: frontmatter.agentId ?? "",
+              inputs: frontmatter.inputs || [],
+              outputs: frontmatter.outputs || [],
+              setsVariables: frontmatter.setsVariables || [],
+              goal: sections.goal,
+              instructions: sections.instructions,
+              completion: sections.completion,
+            },
+          };
+        }),
+      );
+
+      if (nextType) {
+        setEdges((eds) => normalizeDecisionDefaultForSource(eds, selectedNodeId, nextType === "decision"));
+      }
+    },
+    [selectedNodeId, setEdges, setNodes],
+  );
+
+  const selectedNodeMarkdown = useMemo(() => {
+    const node = nodes.find((n) => n.id === selectedNodeId);
+    if (!node) return "";
+    return serializeStepMarkdown({
+      frontmatter: {
+        schemaVersion: "1.1",
+        nodeId: node.id,
+        type: (node.type ?? "step") as "step" | "decision" | "merge" | "end" | "subworkflow",
+        title: node.data.title,
+        agentId: node.data.agentId,
+        inputs: node.data.inputs,
+        outputs: node.data.outputs,
+        setsVariables: node.data.setsVariables,
+      },
+      sections: {
+        goal: node.data.goal || "",
+        instructions: node.data.instructions || "",
+        completion: node.data.completion || "",
+      },
+      rawContent: "",
+    });
+  }, [nodes, selectedNodeId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -827,7 +996,7 @@ export default function EditorPage() {
       .then(([projectRes, workflowRes, assetsRes]) => {
         if (cancelled) return;
         if (projectRes.error || workflowRes.error) {
-          setError((projectRes.error ?? workflowRes.error)?.message ?? "加载失败，请稍后重试");
+          setError((projectRes.error ?? workflowRes.error)?.message ?? "Failed to load. Please try again later.");
           setProject(null);
           setWorkflow(null);
           setWorkflowVariables([]);
@@ -835,7 +1004,6 @@ export default function EditorPage() {
           setArtifactsError(null);
           setAssetsJsonRaw("{}");
           setAssetsError(null);
-          setAssetInsertPath("");
           setProjectAgents([]);
           setAgentsJsonError(null);
           setUnmappedAgentsWarning(null);
@@ -849,7 +1017,7 @@ export default function EditorPage() {
           return;
         }
         if (!projectRes.data || !workflowRes.data) {
-          setError("服务返回格式不正确");
+          setError("Unexpected server response.");
           setProject(null);
           setWorkflow(null);
           setWorkflowVariables([]);
@@ -857,7 +1025,6 @@ export default function EditorPage() {
           setArtifactsError(null);
           setAssetsJsonRaw("{}");
           setAssetsError(null);
-          setAssetInsertPath("");
           setProjectAgents([]);
           setAgentsJsonError(null);
           setUnmappedAgentsWarning(null);
@@ -879,10 +1046,10 @@ export default function EditorPage() {
         setProjectArtifacts(parsedArtifacts.dirs);
         setArtifactsError(parsedArtifacts.error);
         if (assetsRes.error) {
-          setAssetsError(assetsRes.error.message || "无法加载 Assets");
+          setAssetsError(assetsRes.error.message || "Failed to load assets.");
           setAssetsJsonRaw("{}");
         } else if (!assetsRes.data) {
-          setAssetsError("服务返回格式不正确");
+          setAssetsError("Unexpected server response.");
           setAssetsJsonRaw("{}");
         } else {
           setAssetsJsonRaw(assetsRes.data.assetsJson || "{}");
@@ -898,11 +1065,11 @@ export default function EditorPage() {
         const agentWarnings: string[] = [];
         if (parsedGraph.legacyAgentMigrationCount) {
           agentWarnings.push(
-            `已自动迁移 ${parsedGraph.legacyAgentMigrationCount} 个节点的 legacy agent 引用到 agentId（将自动保存）`,
+            `Auto-migrated legacy agent references to agentId for ${parsedGraph.legacyAgentMigrationCount} nodes (will autosave).`,
           );
         }
         if (parsedGraph.unmappedAgentRefs.length) {
-          agentWarnings.push(`存在无法映射的 agent 引用：${parsedGraph.unmappedAgentRefs.join(", ")}`);
+          agentWarnings.push(`Unmapped agent references: ${parsedGraph.unmappedAgentRefs.join(", ")}`);
         }
         const parsedSteps = parseStepFilesJson(workflowRes.data.stepFilesJson);
         const stepKeys = Object.keys(parsedSteps.files);
@@ -911,12 +1078,14 @@ export default function EditorPage() {
         const workflowMdIsV11 = /^schemaVersion:\s*["']?1\.1(\.\d+)?["']?\s*$/m.test(frontmatter);
         const shouldAutosaveFiles = Boolean(parsedSteps.error) || !workflowMdIsV11 || hasLegacyStepFiles;
         if (shouldAutosaveFiles) {
-          agentWarnings.push("检测到 legacy workflow.md/step files：将自动升级为 v1.1 并保存");
+          agentWarnings.push("Detected legacy workflow.md / step files: will auto-upgrade to v1.1 and save.");
         }
-        setUnmappedAgentsWarning(agentWarnings.length ? agentWarnings.join("；") : null);
+        setUnmappedAgentsWarning(agentWarnings.length ? agentWarnings.join("; ") : null);
+
+        const nodesWithStepFiles = applyStepFilesToNodes(parsedGraph.graph.nodes, parsedSteps.files);
 
         if (parsedGraph.graph.nodes.length) {
-          setNodes(parsedGraph.graph.nodes);
+          setNodes(nodesWithStepFiles);
           setEdges(parsedGraph.graph.edges);
           const nextCounters: Record<WorkflowNodeType, number> = {
             step: 1,
@@ -956,7 +1125,7 @@ export default function EditorPage() {
       })
       .catch(() => {
         if (cancelled) return;
-        setError("加载失败，请稍后重试");
+        setError("Failed to load. Please try again later.");
         setProject(null);
         setWorkflow(null);
         setWorkflowVariables([]);
@@ -964,7 +1133,6 @@ export default function EditorPage() {
         setArtifactsError(null);
         setAssetsJsonRaw("{}");
         setAssetsError(null);
-        setAssetInsertPath("");
         setProjectAgents([]);
         setAgentsJsonError(null);
         setUnmappedAgentsWarning(null);
@@ -1161,42 +1329,18 @@ export default function EditorPage() {
     });
   }
 
-  function splitMultiline(value: string): string[] {
-    return value
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => Boolean(line));
-  }
-
-  function appendLine(base: string, line: string): string {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) return base ?? "";
-    const current = base ?? "";
-    if (!current.trim()) return trimmedLine;
-    if (current.endsWith("\n")) return `${current}${trimmedLine}`;
-    return `${current}\n${trimmedLine}`;
-  }
-
-  async function copyTextSilent(text: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // ignore
-    }
-  }
-
   function renameNodeId(oldId: string, nextId: string) {
     const trimmed = nextId.trim();
     if (!trimmed) {
-      setInspectorError("nodeId 不能为空");
+      setInspectorError("nodeId cannot be empty.");
       return;
     }
     if (!nodeIdPattern.test(trimmed)) {
-      setInspectorError("nodeId 不合法：需匹配 ^[A-Za-z0-9][A-Za-z0-9._:-]*$");
+      setInspectorError("Invalid nodeId: must match ^[A-Za-z0-9][A-Za-z0-9._:-]*$");
       return;
     }
     if (nodes.some((n) => n.id === trimmed && n.id !== oldId)) {
-      setInspectorError(`nodeId 已存在：${trimmed}`);
+      setInspectorError(`nodeId already exists: ${trimmed}`);
       return;
     }
 
@@ -1291,14 +1435,14 @@ export default function EditorPage() {
 
     const startNodes = nodes.filter((n) => (indegree.get(n.id) ?? 0) === 0);
     if (startNodes.length !== 1) {
-      warnings.push("检测到多个起点/无起点：顺序可能不唯一（MVP 按拓扑排序预览）");
+      warnings.push("Detected multiple/no start nodes: order may not be unique (MVP uses topological-sort preview).");
     }
 
     const hasBranching = nodes.some(
       (n) => (incomingCount.get(n.id) ?? 0) > 1 || (outgoingCount.get(n.id) ?? 0) > 1,
     );
     if (hasBranching) {
-      warnings.push("检测到分叉/汇合：顺序可能不唯一（MVP 按拓扑排序预览）");
+      warnings.push("Detected branching/merging: order may not be unique (MVP uses topological-sort preview).");
     }
 
     const order: Node<WorkflowNodeData>[] = [];
@@ -1322,7 +1466,7 @@ export default function EditorPage() {
     }
 
     if (order.length !== nodes.length) {
-      return { orderedNodes: nodes, warnings, error: "检测到循环依赖：请移除环形连线后再预览" };
+      return { orderedNodes: nodes, warnings, error: "Cycle detected: remove cyclic edges before previewing." };
     }
 
     return { orderedNodes: order, warnings, error: null };
@@ -1390,6 +1534,8 @@ export default function EditorPage() {
       const title = (node.data?.title ?? node.id).trim() || node.id;
       const agentId = (node.data?.agentId ?? "").trim();
       const instructions = (node.data?.instructions ?? "").trim();
+      const goal = (node.data?.goal ?? "").trim();
+      const completion = (node.data?.completion ?? "").trim();
       const type: WorkflowNodeType = isWorkflowNodeType(node.type) ? node.type : "step";
       const inputs = Array.isArray(node.data?.inputs) ? node.data.inputs : [];
       const outputs = Array.isArray(node.data?.outputs) ? node.data.outputs : [];
@@ -1439,7 +1585,9 @@ export default function EditorPage() {
 
       const body =
         `# ${title}\n\n` +
-        (instructions ? `## Instructions\n\n${instructions}\n` : "## Instructions\n\n");
+        (goal ? `## Goal\n\n${goal}\n\n` : "## Goal\n\n") +
+        (instructions ? `## Instructions\n\n${instructions}\n` : "## Instructions\n\n") +
+        (completion ? `## Completion\n\n${completion}\n` : "");
 
       files[filename] = `${frontmatterLines.join("\n")}${body}`;
     });
@@ -1493,7 +1641,7 @@ export default function EditorPage() {
 
       if (res.error || !res.data) {
         setArtifactsSaving(false);
-        setArtifactsError(res.error?.message ?? "保存 artifacts 失败，请稍后重试");
+        setArtifactsError(res.error?.message ?? "Failed to save artifacts. Please try again later.");
         return null;
       }
 
@@ -1535,7 +1683,7 @@ export default function EditorPage() {
 
       if (res.error || !res.data) {
         setSaveStatus("failed");
-        setSaveError(res.error?.message ?? "保存失败，请稍后重试");
+        setSaveError(res.error?.message ?? "Save failed. Please try again.");
         return null;
       }
 
@@ -1546,13 +1694,13 @@ export default function EditorPage() {
       const agentWarnings: string[] = [];
       if (parsedGraph.legacyAgentMigrationCount) {
         agentWarnings.push(
-          `已自动迁移 ${parsedGraph.legacyAgentMigrationCount} 个节点的 legacy agent 引用到 agentId（将自动保存）`,
+          `Auto-migrated legacy agent references to agentId for ${parsedGraph.legacyAgentMigrationCount} nodes (will autosave).`,
         );
       }
       if (parsedGraph.unmappedAgentRefs.length) {
-        agentWarnings.push(`存在无法映射的 agent 引用：${parsedGraph.unmappedAgentRefs.join(", ")}`);
+        agentWarnings.push(`Unmapped agent references: ${parsedGraph.unmappedAgentRefs.join(", ")}`);
       }
-      setUnmappedAgentsWarning(agentWarnings.length ? agentWarnings.join("；") : null);
+      setUnmappedAgentsWarning(agentWarnings.length ? agentWarnings.join("; ") : null);
 
       const parsedSteps = parseStepFilesJson(res.data.stepFilesJson);
       setStoredStepFiles(parsedSteps.files);
@@ -1616,7 +1764,7 @@ export default function EditorPage() {
     return (
       <main className="min-h-screen bg-zinc-50 text-zinc-950">
         <div className="mx-auto max-w-3xl px-6 py-16">
-          <p className="text-sm text-zinc-600">正在跳转...</p>
+          <p className="text-sm text-zinc-600">Redirecting...</p>
         </div>
       </main>
     );
@@ -1646,7 +1794,7 @@ export default function EditorPage() {
             <div className="flex flex-wrap items-center gap-2">
               {execution.error ? (
                 <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-700">
-                  无法保存：循环依赖
+                  Cannot save: cycle detected
                 </span>
               ) : saveStatus === "saving" ? (
                 <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
@@ -1684,7 +1832,7 @@ export default function EditorPage() {
               href={projectId ? `/builder/${projectId}` : "/dashboard"}
               className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
             >
-              返回 ProjectBuilder
+              Back to ProjectBuilder
             </Link>
             <button
               type="button"
@@ -1694,7 +1842,7 @@ export default function EditorPage() {
               }}
               className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
             >
-              退出登录
+              Sign out
             </button>
           </div>
         </header>
@@ -1709,7 +1857,7 @@ export default function EditorPage() {
         ) : null}
 
         {ready && !apiEnvError && workflowKey && loadedWorkflowKey !== workflowKey ? (
-          <p className="mt-6 text-sm text-zinc-600">加载中...</p>
+          <p className="mt-6 text-sm text-zinc-600">Loading...</p>
         ) : null}
 
         {error && loadedWorkflowKey === workflowKey ? (
@@ -1768,10 +1916,10 @@ export default function EditorPage() {
                     onClick={() => setPaletteOpen(false)}
                     className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                   >
-                    收起
+                    Collapse
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">拖拽节点到画布。</p>
+                <p className="mt-1 text-xs text-zinc-500">Drag nodes onto the canvas.</p>
 
                 <div className="mt-4 space-y-2">
                   <div
@@ -1815,8 +1963,8 @@ export default function EditorPage() {
               <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                 <h2 className="text-sm font-semibold text-zinc-900">Tips</h2>
                 <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-600">
-                  <li>点击节点后在右侧 Inspector 编辑 node 配置。</li>
-                  <li>边（edge）支持 label / conditionText；decision node 支持 default 分支。</li>
+                  <li>Click a node to edit its config in the Inspector.</li>
+                  <li>Edges support label / conditionText; decision nodes support a default branch.</li>
                 </ul>
               </div>
 
@@ -1868,7 +2016,7 @@ export default function EditorPage() {
                       onClick={() => setPaletteOpen(true)}
                       className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                     >
-                      展开 Palette
+                      Show Palette
                     </button>
                   ) : null}
                   {!inspectorOpen ? (
@@ -1877,7 +2025,7 @@ export default function EditorPage() {
                       onClick={() => setInspectorOpen(true)}
                       className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                     >
-                      展开 Inspector
+                      Show Inspector
                     </button>
                   ) : null}
                 </div>
@@ -1923,57 +2071,57 @@ export default function EditorPage() {
                       {workflowMdPreview}
                     </pre>
                   </div>
-	                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-	                    <h3 className="text-sm font-semibold text-zinc-900">workflow.md (stored)</h3>
-	                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-	                      {workflow.workflowMd}
-	                    </pre>
-	                  </div>
-	                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-	                    <h3 className="text-sm font-semibold text-zinc-900">workflow.graph.json (preview)</h3>
-	                    {workflowGraphBuild.errors.length ? (
-	                      <div
-	                        role="alert"
-	                        className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900"
-	                      >
-	                        {workflowGraphBuild.errors.join("；")}
-	                      </div>
-	                    ) : null}
-	                    {workflowGraphSchemaError ? (
-	                      <div
-	                        role="alert"
-	                        className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-	                      >
-	                        Schema 校验失败：{workflowGraphSchemaError}
-	                      </div>
-	                    ) : null}
-	                    {workflowGraphBuild.warnings.length ? (
-	                      <div className="mt-3 space-y-2">
-	                        {workflowGraphBuild.warnings.map((msg) => (
-	                          <div
-	                            key={msg}
-	                            role="status"
-	                            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-	                          >
-	                            {msg}
-	                          </div>
-	                        ))}
-	                      </div>
-	                    ) : null}
-	                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-	                      {workflowGraphPreview || "（尚未生成）"}
-	                    </pre>
-	                  </div>
-	                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-	                    <h3 className="text-sm font-semibold text-zinc-900">{primaryStepFile} (preview)</h3>
-	                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-	                      {primaryStepPreview}
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
+                    <h3 className="text-sm font-semibold text-zinc-900">workflow.md (stored)</h3>
+                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
+                      {workflow.workflowMd}
+                    </pre>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
+                    <h3 className="text-sm font-semibold text-zinc-900">workflow.graph.json (preview)</h3>
+                    {workflowGraphBuild.errors.length ? (
+                      <div
+                        role="alert"
+                        className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900"
+                      >
+                        {workflowGraphBuild.errors.join("; ")}
+                      </div>
+                    ) : null}
+                    {workflowGraphSchemaError ? (
+                      <div
+                        role="alert"
+                        className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
+                      >
+                        Schema validation failed: {workflowGraphSchemaError}
+                      </div>
+                    ) : null}
+                    {workflowGraphBuild.warnings.length ? (
+                      <div className="mt-3 space-y-2">
+                        {workflowGraphBuild.warnings.map((msg) => (
+                          <div
+                            key={msg}
+                            role="status"
+                            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
+                          >
+                            {msg}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
+                      {workflowGraphPreview || "(not generated yet)"}
+                    </pre>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
+                    <h3 className="text-sm font-semibold text-zinc-900">{primaryStepFile} (preview)</h3>
+                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
+                      {primaryStepPreview}
                     </pre>
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-6">
                     <h3 className="text-sm font-semibold text-zinc-900">{primaryStepFile} (stored)</h3>
                     <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {primaryStepStored || "（尚未保存 step files）"}
+                      {primaryStepStored || "(step files not saved yet)"}
                     </pre>
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-6">
@@ -2002,7 +2150,7 @@ export default function EditorPage() {
           </section>
 
           {inspectorOpen ? (
-            <aside className="w-96 shrink-0 space-y-4">
+            <aside className="w-96 shrink-0 space-y-4 lg:w-[520px]">
               <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-sm font-semibold text-zinc-900">Inspector</h2>
@@ -2011,7 +2159,7 @@ export default function EditorPage() {
                     onClick={() => setInspectorOpen(false)}
                     className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                   >
-                    收起
+                    Collapse
                   </button>
                 </div>
 
@@ -2063,8 +2211,8 @@ export default function EditorPage() {
                 {inspectorTab === "workflow" ? (
                   <div className="mt-4 space-y-4">
                     <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                      在 Step 指令中可引用 `variables.&lt;key&gt;`；该面板将写入 v1.1 `workflow.md`
-                      frontmatter `variables`。
+                      In Step instructions you can reference `variables.&lt;key&gt;`. This panel writes to the v1.1{" "}
+                      <span className="font-mono">workflow.md</span> frontmatter <span className="font-mono">variables</span>.
                     </div>
 
                     {workflowVariablesIssues.emptyKeys || workflowVariablesIssues.duplicates.length ? (
@@ -2073,10 +2221,10 @@ export default function EditorPage() {
                         className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
                       >
                         {workflowVariablesIssues.emptyKeys
-                          ? `存在 ${workflowVariablesIssues.emptyKeys} 个空 key（不会写入 workflow.md）`
+                          ? `${workflowVariablesIssues.emptyKeys} empty key(s) (won't be written to workflow.md).`
                           : null}
                         {workflowVariablesIssues.duplicates.length
-                          ? `${workflowVariablesIssues.emptyKeys ? "；" : ""}重复 keys：${workflowVariablesIssues.duplicates.join(", ")}`
+                          ? `${workflowVariablesIssues.emptyKeys ? "; " : ""}Duplicate keys: ${workflowVariablesIssues.duplicates.join(", ")}`
                           : null}
                       </div>
                     ) : null}
@@ -2131,7 +2279,7 @@ export default function EditorPage() {
                         ))}
                       </div>
                     ) : (
-                      <p className="text-xs text-zinc-500">暂无 variables；点击 Add 添加。</p>
+                      <p className="text-xs text-zinc-500">No variables yet. Click Add to create one.</p>
                     )}
 
                     {selectedNode?.data.setsVariables?.length ? (
@@ -2140,15 +2288,15 @@ export default function EditorPage() {
                         onClick={() => addWorkflowVariableKeys(selectedNode.data.setsVariables ?? [])}
                         className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
                       >
-                        从当前节点 setsVariables 导入 keys
+                        Import keys from this node&apos;s setsVariables
                       </button>
                     ) : null}
                   </div>
                 ) : inspectorTab === "artifacts" ? (
                   <div className="mt-4 space-y-4">
                     <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                      管理 project-level `artifacts/` 目录（用于 outputs 路径选择与校验）。运行时路径为
-                      `@project/artifacts/...`。
+                      Manage project-level <span className="font-mono">artifacts/</span> directories (for outputs path
+                      selection and validation). Runtime path is <span className="font-mono">@project/artifacts/...</span>.
                     </div>
 
                     {artifactsError ? (
@@ -2171,18 +2319,18 @@ export default function EditorPage() {
                           value={artifactsDraft}
                           onChange={(e) => setArtifactsDraft(e.target.value)}
                           className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                          placeholder="create-story 或 artifacts/create-story"
+                          placeholder="create-story or artifacts/create-story"
                         />
                         <button
                           type="button"
                           onClick={() => {
                             const normalized = normalizeArtifactsDir(artifactsDraft);
                             if (normalized.error || !normalized.value) {
-                              setArtifactsError(normalized.error ?? "目录不合法");
+                              setArtifactsError(normalized.error ?? "Invalid directory.");
                               return;
                             }
                             if (projectArtifacts.includes(normalized.value)) {
-                              setArtifactsError("目录已存在");
+                              setArtifactsError("Directory already exists.");
                               return;
                             }
                             void saveProjectArtifacts(projectArtifacts.concat(normalized.value));
@@ -2194,7 +2342,7 @@ export default function EditorPage() {
                           {artifactsSaving ? "Saving…" : "Add"}
                         </button>
                       </div>
-                      <p className="text-xs text-zinc-500">保存形式：`artifacts/&lt;dir&gt;`（目录级别）。</p>
+                      <p className="text-xs text-zinc-500">Saved as `artifacts/&lt;dir&gt;` (directory-level).</p>
                     </div>
 
                     <div className="rounded-2xl border border-zinc-200 bg-white p-4">
@@ -2207,15 +2355,15 @@ export default function EditorPage() {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const next = window.prompt("重命名目录", dir);
+                                  const next = window.prompt("Rename directory", dir);
                                   if (next === null) return;
                                   const normalized = normalizeArtifactsDir(next);
                                   if (normalized.error || !normalized.value) {
-                                    setArtifactsError(normalized.error ?? "目录不合法");
+                                    setArtifactsError(normalized.error ?? "Invalid directory.");
                                     return;
                                   }
                                   if (projectArtifacts.includes(normalized.value) && normalized.value !== dir) {
-                                    setArtifactsError("目录已存在");
+                                    setArtifactsError("Directory already exists.");
                                     return;
                                   }
                                   void saveProjectArtifacts(
@@ -2231,16 +2379,14 @@ export default function EditorPage() {
                           ))}
                         </ul>
                       ) : (
-                        <p className="mt-2 text-xs text-zinc-500">暂无目录；可先添加 `artifacts/create-story`。</p>
+                        <p className="mt-2 text-xs text-zinc-500">No directories yet. Try adding `artifacts/create-story`.</p>
                       )}
                     </div>
                   </div>
                 ) : selectedNode ? (
                   <div className="mt-4 space-y-4">
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-id" className="text-sm font-medium">
-                        nodeId
-                      </label>
+	                    <div className="space-y-1.5">
+                      <label htmlFor="node-id" className="text-sm font-medium">Node ID (nodeId)</label>
                       <div className="flex gap-2">
                         <input
                           id="node-id"
@@ -2261,349 +2407,26 @@ export default function EditorPage() {
                           Apply
                         </button>
                       </div>
-                      <p className="text-xs text-zinc-500">用于后续导出 `steps/&lt;nodeId&gt;.md`。</p>
+                      <p className="text-xs text-zinc-500">Used for exporting `steps/&lt;nodeId&gt;.md`.</p>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-type" className="text-sm font-medium">
-                        Type
-                      </label>
-                      <select
-                        id="node-type"
-                        value={(selectedNode.type ?? "step") as string}
-                        onChange={(e) => {
-                          const nextType = e.target.value as WorkflowNodeType;
-                          setNodes((nds) =>
-                            nds.map((n) => (n.id === selectedNode.id ? { ...n, type: nextType } : n)),
-                          );
-                          setEdges((eds) =>
-                            normalizeDecisionDefaultForSource(eds, selectedNode.id, nextType === "decision"),
-                          );
+                    {(selectedNode.type === "step" || selectedNode.type === "decision" || selectedNode.type === "merge" || selectedNode.type === "end" || selectedNode.type === "subworkflow") ? (
+                      <StepEditorPanel
+                        content={selectedNodeMarkdown}
+                        agents={editorAgents}
+                        assets={{ items: assetsList, error: assetsError, parseError: assetsParseError }}
+                        artifacts={{
+                          dirs: projectArtifacts,
+                          saving: artifactsSaving,
+                          onAddDirs: (dirs) => void saveProjectArtifacts(projectArtifacts.concat(dirs)),
                         }}
-                        className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                      >
-                        <option value="step">step</option>
-                        <option value="decision">decision</option>
-                        <option value="merge">merge</option>
-                        <option value="end">end</option>
-                        <option value="subworkflow">subworkflow</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-title" className="text-sm font-medium">
-                        Title
-                      </label>
-                      <input
-                        id="node-title"
-                        type="text"
-                        value={selectedNode.data.title ?? ""}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, title: e.target.value } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                        onSyncWorkflowVariables={(keys) => {
+                          addWorkflowVariableKeys(keys);
+                          setInspectorTab("workflow");
+                        }}
+                        onChange={handleStepEditorChange}
                       />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-agent" className="text-sm font-medium">
-                        Agent
-                      </label>
-                      <select
-                        id="node-agent"
-                        value={selectedNode.data.agentId ?? ""}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, agentId: e.target.value } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                      >
-                        <option value="">None</option>
-                        {selectedNode.data.agentId &&
-                        !projectAgents.some((a) => a.id === selectedNode.data.agentId) ? (
-                          <option value={selectedNode.data.agentId}>
-                            {selectedNode.data.agentId} (missing)
-                          </option>
-                        ) : null}
-                        {projectAgents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.icon || "🧩"} {agent.title || agent.name}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-zinc-500">Agent 列表来自 ProjectBuilder 的 Agents 面板。</p>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-instructions" className="text-sm font-medium">
-                        Instructions
-                      </label>
-                      <textarea
-                        id="node-instructions"
-                        value={selectedNode.data.instructions ?? ""}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, instructions: e.target.value } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="min-h-28 w-full resize-y rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="这一步需要做什么？"
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <label htmlFor="node-insert-asset" className="text-sm font-medium">
-                          Insert Asset
-                        </label>
-                        <span className="text-xs text-zinc-500">{assetsList.length}</span>
-                      </div>
-                      {assetsError || assetsParseError ? (
-                        <p className="text-xs text-amber-700">{assetsError || assetsParseError}</p>
-                      ) : assetsList.length ? (
-                        <>
-                          <select
-                            id="node-insert-asset"
-                            value={assetInsertPath}
-                            onChange={(e) => setAssetInsertPath(e.target.value)}
-                            className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                          >
-                            <option value="">选择一个 asset…</option>
-                            {assetsList.map((asset) => (
-                              <option key={asset.path} value={asset.path}>
-                                {asset.path}
-                              </option>
-                            ))}
-                          </select>
-
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!assetInsertPath.trim()) return;
-                                void copyTextSilent(toRuntimeAssetPath(assetInsertPath));
-                              }}
-                              disabled={!assetInsertPath.trim()}
-                              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              Copy @pkg
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const path = assetInsertPath.trim();
-                                if (!path) return;
-                                const runtimePath = toRuntimeAssetPath(path);
-                                setNodes((nds) =>
-                                  nds.map((n) =>
-                                    n.id === selectedNode.id
-                                      ? {
-                                          ...n,
-                                          data: {
-                                            ...n.data,
-                                            instructions: appendLine(n.data.instructions ?? "", runtimePath),
-                                          },
-                                        }
-                                      : n,
-                                  ),
-                                );
-                              }}
-                              disabled={!assetInsertPath.trim()}
-                              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              Insert into Instructions
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const path = assetInsertPath.trim();
-                                if (!path) return;
-                                setNodes((nds) =>
-                                  nds.map((n) => {
-                                    if (n.id !== selectedNode.id) return n;
-                                    const current = Array.isArray(n.data.inputs) ? n.data.inputs : [];
-                                    const next = current.includes(path) ? current : current.concat(path);
-                                    return { ...n, data: { ...n.data, inputs: next } };
-                                  }),
-                                );
-                              }}
-                              disabled={!assetInsertPath.trim()}
-                              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              Add to inputs
-                            </button>
-                          </div>
-                          <p className="text-xs text-zinc-500">
-                            Runtime 路径为 <span className="font-mono">@pkg/assets/...</span>（只读）。
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-xs text-zinc-500">暂无 assets：请先在 ProjectBuilder → Assets 创建。</p>
-                      )}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-inputs" className="text-sm font-medium">
-                        inputs (one per line)
-                      </label>
-                      <textarea
-                        id="node-inputs"
-                        value={(selectedNode.data.inputs ?? []).join("\n")}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, inputs: splitMultiline(e.target.value) } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="min-h-20 w-full resize-y rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="artifacts/... 或其他输入路径"
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-outputs" className="text-sm font-medium">
-                        outputs (one per line, artifacts/...)
-                      </label>
-                      <textarea
-                        id="node-outputs"
-                        value={(selectedNode.data.outputs ?? []).join("\n")}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, outputs: splitMultiline(e.target.value) } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="min-h-20 w-full resize-y rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="artifacts/create-story/target.md"
-                      />
-                      {(selectedNode.data.outputs ?? []).some((p) => !p.startsWith("artifacts/")) ? (
-                        <p className="text-xs text-amber-700">
-                          outputs 建议以 `artifacts/` 开头（运行时路径为 `@project/artifacts/...`）。
-                        </p>
-                      ) : null}
-                      {(() => {
-                        const outputs = selectedNode.data.outputs ?? [];
-                        const known = new Set(projectArtifacts);
-                        const missing = Array.from(
-                          new Set(
-                            outputs
-                              .filter((p) => p.startsWith("artifacts/"))
-                              .map((p) => p.split("/").slice(0, -1).join("/"))
-                              .filter((dir) => Boolean(dir) && dir !== "artifacts" && !known.has(dir)),
-                          ),
-                        );
-                        if (!missing.length) return null;
-                        return (
-                          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                            <p>outputs 引用了未登记目录：{missing.join(", ")}</p>
-                            <button
-                              type="button"
-                              onClick={() => void saveProjectArtifacts(projectArtifacts.concat(missing))}
-                              disabled={artifactsSaving}
-                              className="mt-2 rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              添加到 Artifacts 列表
-                            </button>
-                          </div>
-                        );
-                      })()}
-                      {projectArtifacts.length ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs text-zinc-500">Quick add:</span>
-                          {projectArtifacts.slice(0, 6).map((dir) => (
-                            <button
-                              key={dir}
-                              type="button"
-                              onClick={() => {
-                                const filename = window.prompt("输出文件名（例如 target.md）", "target.md");
-                                if (!filename) return;
-                                const cleaned = filename.trim().replace(/^\/+/, "");
-                                if (!cleaned) return;
-                                setNodes((nds) =>
-                                  nds.map((n) =>
-                                    n.id === selectedNode.id
-                                      ? {
-                                          ...n,
-                                          data: { ...n.data, outputs: (n.data.outputs ?? []).concat(`${dir}/${cleaned}`) },
-                                        }
-                                      : n,
-                                  ),
-                                );
-                              }}
-                              className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
-                            >
-                              {dir.replace(/^artifacts\//, "")}
-                            </button>
-                          ))}
-                          {projectArtifacts.length > 6 ? (
-                            <span className="text-xs text-zinc-400">+{projectArtifacts.length - 6}</span>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-zinc-500">未配置 artifacts 目录：可在 Inspector → Artifacts 添加。</p>
-                      )}
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label htmlFor="node-setsVariables" className="text-sm font-medium">
-                        setsVariables (keys, one per line)
-                      </label>
-                      <textarea
-                        id="node-setsVariables"
-                        value={(selectedNode.data.setsVariables ?? []).join("\n")}
-                        onChange={(e) =>
-                          setNodes((nds) =>
-                            nds.map((n) =>
-                              n.id === selectedNode.id
-                                ? { ...n, data: { ...n.data, setsVariables: splitMultiline(e.target.value) } }
-                                : n,
-                            ),
-                          )
-                        }
-                        className="min-h-20 w-full resize-y rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                        placeholder="storyKey\nepicNum\n..."
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            addWorkflowVariableKeys(selectedNode.data.setsVariables ?? []);
-                            setInspectorTab("workflow");
-                          }}
-                          className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
-                        >
-                          同步 keys 到 Workflow Variables
-                        </button>
-                        {workflowVariables.length ? (
-                          <span className="text-xs text-zinc-500">
-                            已定义：{workflowVariables.map((v) => v.key.trim()).filter(Boolean).join(", ") || "—"}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-zinc-500">尚未定义 workflow variables</span>
-                        )}
-                      </div>
-                    </div>
+                    ) : null}
 
                     {selectedNode.type === "subworkflow" ? (
                       <div className="space-y-1.5">
@@ -2628,12 +2451,14 @@ export default function EditorPage() {
                           className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
                           placeholder="target workflow id"
                         />
-                        <p className="text-xs text-zinc-500">MVP：先用 workflowId（数字）引用目标 workflow。</p>
+                        <p className="text-xs text-zinc-500">
+                          MVP: reference the target workflow by workflowId (number) for now.
+                        </p>
                       </div>
                     ) : null}
 
                     <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <h3 className="text-sm font-semibold text-zinc-900">Outgoing Edges</h3>
+	                      <h3 className="text-sm font-semibold text-zinc-900">Outgoing edges</h3>
                       {edges.filter((e) => e.source === selectedNode.id).length ? (
                         <div className="mt-3 space-y-3">
                           {edges
@@ -2651,8 +2476,8 @@ export default function EditorPage() {
                                   </p>
 
                                   <div className="mt-2 grid gap-2">
-                                    <div className="grid gap-1.5">
-                                      <label className="text-xs font-medium text-zinc-700">label</label>
+	                                    <div className="grid gap-1.5">
+		                                      <label className="text-xs font-medium text-zinc-700">Label (label)</label>
                                       <input
                                         type="text"
                                         value={typeof edge.label === "string" ? edge.label : ""}
@@ -2660,12 +2485,14 @@ export default function EditorPage() {
                                         className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
                                       />
                                       <p className="text-[11px] text-zinc-500">
-                                        为空时会按规则自动生成（single: next / multi: branch-n）。
+	                                        If empty, it will be auto-generated (single: next / multi: branch-n).
                                       </p>
                                     </div>
 
-                                    <div className="grid gap-1.5">
-                                      <label className="text-xs font-medium text-zinc-700">conditionText</label>
+	                                    <div className="grid gap-1.5">
+		                                      <label className="text-xs font-medium text-zinc-700">
+		                                        Condition text (conditionText)
+		                                      </label>
                                       <input
                                         type="text"
                                         value={edge.data?.conditionText ?? ""}
@@ -2683,7 +2510,7 @@ export default function EditorPage() {
                                           checked={Boolean(edge.data?.isDefault)}
                                           onChange={() => setDecisionDefaultEdge(selectedNode.id, edge.id)}
                                         />
-                                        默认分支（isDefault）
+	                                        Default branch (isDefault)
                                       </label>
                                     ) : null}
                                   </div>
@@ -2692,12 +2519,12 @@ export default function EditorPage() {
                             })}
                         </div>
                       ) : (
-                        <p className="mt-2 text-xs text-zinc-500">暂无出边，拖拽连线以创建。</p>
+                        <p className="mt-2 text-xs text-zinc-500">No outgoing edges yet. Drag a connection to create one.</p>
                       )}
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-3 text-xs text-zinc-500">点击画布中的节点以编辑其配置。</p>
+                  <p className="mt-3 text-xs text-zinc-500">Click a node on the canvas to edit its configuration.</p>
                 )}
               </div>
             </aside>

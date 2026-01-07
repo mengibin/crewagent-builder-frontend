@@ -3,7 +3,7 @@ import { getAccessToken } from "@/lib/auth";
 export type ApiError = {
   code: string;
   message: string;
-  details?: Record<string, string> | null;
+  details?: unknown | null;
 };
 
 export type ApiResponse<T> = {
@@ -24,7 +24,7 @@ export function getApiBaseUrl(): ApiBaseUrlResult {
     return {
       baseUrl: null,
       error:
-        "API 环境未配置：请在 `crewagent-builder-frontend/.env.local` 中设置 NEXT_PUBLIC_API_BASE_URL（例如 http://localhost:8000）。",
+        "API base URL not configured: set NEXT_PUBLIC_API_BASE_URL in `crewagent-builder-frontend/.env.local` (e.g. http://localhost:8000).",
     };
   }
 
@@ -50,7 +50,7 @@ async function requestJson<T>(
   if (!baseUrl) {
     return {
       data: null,
-      error: { code: "ENV_NOT_CONFIGURED", message: envError ?? "API 环境未配置" },
+      error: { code: "ENV_NOT_CONFIGURED", message: envError ?? "API base URL not configured." },
     };
   }
 
@@ -68,13 +68,13 @@ async function requestJson<T>(
     if (!json || typeof json !== "object" || !("data" in json) || !("error" in json)) {
       return {
         data: null,
-        error: { code: "BAD_RESPONSE", message: "服务返回格式不正确" },
+        error: { code: "BAD_RESPONSE", message: "Unexpected server response." },
       };
     }
 
     return json;
   } catch {
-    return { data: null, error: { code: "NETWORK_ERROR", message: "网络错误，请稍后重试" } };
+    return { data: null, error: { code: "NETWORK_ERROR", message: "Network error. Please try again later." } };
   }
 }
 
@@ -108,4 +108,58 @@ export async function deleteJsonWithBody<T>(
   options?: RequestOptions,
 ): Promise<ApiResponse<T>> {
   return requestJson<T>("DELETE", path, body, options);
+}
+
+/**
+ * POST a FormData (multipart/form-data) to the API.
+ * Used for file uploads like .bmad package import.
+ */
+export async function postFormData<T>(
+  path: string,
+  formData: FormData,
+  options?: RequestOptions,
+): Promise<ApiResponse<T>> {
+  const { baseUrl, error: envError } = getApiBaseUrl();
+  if (!baseUrl) {
+    return {
+      data: null,
+      error: { code: "ENV_NOT_CONFIGURED", message: envError ?? "API base URL not configured." },
+    };
+  }
+
+  const headers: Record<string, string> = {};
+  // Note: Do NOT set Content-Type for FormData, browser will set it with boundary
+  if (options?.auth) Object.assign(headers, getAuthHeader());
+
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
+    if (!json || typeof json !== "object" || !("data" in json) || !("error" in json)) {
+      // Handle non-standard error responses (like 400/413 with detail field)
+      const errorDetail = json as unknown as { detail?: { code?: string; message?: string; details?: unknown[] } };
+      if (errorDetail?.detail) {
+        return {
+          data: null,
+          error: {
+            code: errorDetail.detail.code ?? "API_ERROR",
+            message: errorDetail.detail.message ?? "Request failed.",
+            details: errorDetail.detail.details as Record<string, string> | null | undefined,
+          },
+        };
+      }
+      return {
+        data: null,
+        error: { code: "BAD_RESPONSE", message: "Unexpected server response." },
+      };
+    }
+
+    return json;
+  } catch {
+    return { data: null, error: { code: "NETWORK_ERROR", message: "Network error. Please try again later." } };
+  }
 }

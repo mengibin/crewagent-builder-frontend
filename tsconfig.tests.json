@@ -12,6 +12,6 @@
     "outDir": ".tmp-tests",
     "types": ["node"]
   },
-  "include": ["src/lib/utils.ts", "src/lib/agents-manifest-v11.ts", "tests/**/*.ts"],
+  "include": ["src/lib/utils.ts", "src/lib/agents-manifest-v11.ts", "src/lib/agent-menu-v11.ts", "src/lib/markdown.ts", "tests/**/*.ts"],
   "exclude": ["node_modules"]
 }

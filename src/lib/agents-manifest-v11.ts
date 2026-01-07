@@ -149,69 +149,129 @@ export function buildAgentsManifestV11(params: { agentsJsonRaw: string }): Agent
 
   const trimmed = params.agentsJsonRaw?.trim() ?? "";
   if (!trimmed) {
-    return { manifest: null, warnings, errors: ["请先创建至少 1 个 Agent"] };
+    return { manifest: null, warnings, errors: ["Please create at least 1 agent first."] };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed) as unknown;
   } catch {
-    return { manifest: null, warnings, errors: ["agentsJson 格式不合法：无法解析 JSON"] };
+    return { manifest: null, warnings, errors: ["Invalid agentsJson: unable to parse JSON."] };
   }
 
   const agents: AgentV11[] = [];
   const seen = new Set<string>();
 
   if (Array.isArray(parsed)) {
-    parsed.forEach((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    // Detect if this is v1.1 format (has id + metadata) or legacy format (has name)
+    const isV11Array = parsed.some((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
       const obj = item as Record<string, unknown>;
-      const name = normalizeString(obj.name);
-      if (!name) return;
-      const role = normalizeString(obj.role);
-
-      const id = uniqueAgentId(name, seen);
-      seen.add(id);
-
-      agents.push({
-        id,
-        metadata: { name, title: name, icon: "🧩" },
-        persona: {
-          role: role || "Agent",
-          identity: role || "TBD",
-          communication_style: "direct",
-          principles: ["TBD"],
-        },
-        tools: { ...DEFAULT_TOOLS },
-      });
+      return typeof obj.id === "string" && obj.metadata && typeof obj.metadata === "object";
     });
+
+    if (isV11Array) {
+      // Treat as v1.1 agents array (like manifest.agents but without wrapper)
+      parsed.forEach((item, index) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return;
+        const agent = item as Record<string, unknown>;
+        const id = normalizeString(agent.id);
+        if (!id || !isValidAgentId(id) || seen.has(id)) return;
+
+        const metadataRaw = agent.metadata;
+        const metadataObj =
+          metadataRaw && typeof metadataRaw === "object" && !Array.isArray(metadataRaw)
+            ? (metadataRaw as Record<string, unknown>)
+            : {};
+
+        const name = normalizeString(metadataObj.name) || normalizeString(metadataObj.title) || id;
+        const title = normalizeString(metadataObj.title) || normalizeString(metadataObj.name) || name;
+        const icon = normalizeString(metadataObj.icon) || "🧩";
+
+        const personaRaw = agent.persona;
+        const personaObj =
+          personaRaw && typeof personaRaw === "object" && !Array.isArray(personaRaw)
+            ? (personaRaw as Record<string, unknown>)
+            : {};
+
+        const role = normalizeString(personaObj.role) || "Agent";
+        const identity = normalizeString(personaObj.identity) || role || "TBD";
+        const communication_style = normalizeString(personaObj.communication_style) || "direct";
+        const principlesRaw = personaObj.principles;
+        const principles = Array.isArray(principlesRaw)
+          ? normalizeStringArray(principlesRaw)
+          : typeof principlesRaw === "string"
+            ? principlesRaw.split("\n").map((p) => p.trim()).filter((p) => p.length > 0)
+            : ["TBD"];
+
+        seen.add(id);
+        agents.push({
+          id,
+          metadata: {
+            name,
+            title,
+            icon,
+            ...(normalizeString(metadataObj.module) ? { module: normalizeString(metadataObj.module) } : {}),
+            ...(normalizeString(metadataObj.description) ? { description: normalizeString(metadataObj.description) } : {}),
+          },
+          persona: { role, identity, communication_style, principles: principles.length ? principles : ["TBD"] },
+          tools: normalizeTools(agent.tools),
+          ...(Array.isArray(agent.critical_actions) ? { critical_actions: normalizeStringArray(agent.critical_actions) } : {}),
+          ...(typeof agent.systemPrompt === "string" ? { systemPrompt: agent.systemPrompt } : {}),
+        });
+      });
+    } else {
+      // Legacy format: array of { name, role }
+      parsed.forEach((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return;
+        const obj = item as Record<string, unknown>;
+        const name = normalizeString(obj.name);
+        if (!name) return;
+        const role = normalizeString(obj.role);
+
+        const id = uniqueAgentId(name, seen);
+        seen.add(id);
+
+        agents.push({
+          id,
+          metadata: { name, title: name, icon: "🧩" },
+          persona: {
+            role: role || "Agent",
+            identity: role || "TBD",
+            communication_style: "direct",
+            principles: ["TBD"],
+          },
+          tools: { ...DEFAULT_TOOLS },
+        });
+      });
+    }
   } else if (parsed && typeof parsed === "object") {
     const obj = parsed as Record<string, unknown>;
     const rawSchemaVersion = normalizeString(obj.schemaVersion);
     if (rawSchemaVersion && !/^1\.1(\.\d+)?$/.test(rawSchemaVersion)) {
-      warnings.push(`schemaVersion 不合法（已回退为 "1.1"）：${rawSchemaVersion}`);
+      warnings.push(`Invalid schemaVersion (fell back to "1.1"): ${rawSchemaVersion}`);
     } else if (rawSchemaVersion && rawSchemaVersion !== "1.1") {
-      warnings.push(`schemaVersion != "1.1"（已规范化输出为 "1.1"）：${rawSchemaVersion}`);
+      warnings.push(`schemaVersion != "1.1" (normalized output to "1.1"): ${rawSchemaVersion}`);
     }
 
     const rawAgents = Array.isArray(obj.agents) ? obj.agents : [];
     rawAgents.forEach((item, index) => {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
-        errors.push(`agents[${index}] 不是有效对象`);
+        errors.push(`agents[${index}] is not a valid object`);
         return;
       }
       const agent = item as Record<string, unknown>;
       const id = normalizeString(agent.id);
       if (!id) {
-        errors.push(`agents[${index}].id 不能为空`);
+        errors.push(`agents[${index}].id cannot be empty`);
         return;
       }
       if (!isValidAgentId(id)) {
-        errors.push(`agents[${index}].id 不合法：${id}`);
+        errors.push(`agents[${index}].id is invalid: ${id}`);
         return;
       }
       if (seen.has(id)) {
-        errors.push(`存在重复 agentId：${id}`);
+        errors.push(`Duplicate agentId: ${id}`);
         return;
       }
 
@@ -226,11 +286,11 @@ export function buildAgentsManifestV11(params: { agentsJsonRaw: string }): Agent
       const icon = normalizeString(metadataObj.icon) || "🧩";
 
       if (!name) {
-        errors.push(`agents[${index}].metadata.name 不能为空`);
+        errors.push(`agents[${index}].metadata.name cannot be empty`);
         return;
       }
       if (!title) {
-        errors.push(`agents[${index}].metadata.title 不能为空`);
+        errors.push(`agents[${index}].metadata.title cannot be empty`);
         return;
       }
 
@@ -258,25 +318,25 @@ export function buildAgentsManifestV11(params: { agentsJsonRaw: string }): Agent
       const critical_actions = Array.isArray(agent.critical_actions) ? normalizeStringArray(agent.critical_actions) : [];
       const prompts = Array.isArray(agent.prompts)
         ? agent.prompts.flatMap((p) => {
-            if (!p || typeof p !== "object" || Array.isArray(p)) return [];
-            const obj = p as Record<string, unknown>;
-            const pid = normalizeString(obj.id);
-            const content = normalizeString(obj.content);
-            if (!pid || !content) return [];
-            const description = normalizeString(obj.description);
-            return [{ id: pid, content, ...(description ? { description } : {}) }];
-          })
+          if (!p || typeof p !== "object" || Array.isArray(p)) return [];
+          const obj = p as Record<string, unknown>;
+          const pid = normalizeString(obj.id);
+          const content = normalizeString(obj.content);
+          if (!pid || !content) return [];
+          const description = normalizeString(obj.description);
+          return [{ id: pid, content, ...(description ? { description } : {}) }];
+        })
         : [];
 
       const menu = Array.isArray(agent.menu)
         ? agent.menu.filter((item) => {
-            if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-            const description = normalizeString((item as Record<string, unknown>).description);
-            return Boolean(description);
-          })
+          if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+          const description = normalizeString((item as Record<string, unknown>).description);
+          return Boolean(description);
+        })
         : [];
       if (Array.isArray(agent.menu) && menu.length !== agent.menu.length) {
-        warnings.push(`检测到无效 menu items（已过滤）：agentId=${id}`);
+        warnings.push(`Filtered invalid menu items: agentId=${id}`);
       }
 
       const conversational_knowledge = Array.isArray(agent.conversational_knowledge)
@@ -286,7 +346,7 @@ export function buildAgentsManifestV11(params: { agentsJsonRaw: string }): Agent
         Array.isArray(agent.conversational_knowledge) &&
         conversational_knowledge.length !== agent.conversational_knowledge.length
       ) {
-        warnings.push(`检测到无效 conversational_knowledge items（已过滤）：agentId=${id}`);
+        warnings.push(`Filtered invalid conversational_knowledge items: agentId=${id}`);
       }
 
       const normalizedAgent: AgentV11 = {
@@ -320,11 +380,11 @@ export function buildAgentsManifestV11(params: { agentsJsonRaw: string }): Agent
       agents.push(normalizedAgent);
     });
   } else {
-    errors.push("agentsJson 结构不合法：需要对象或数组");
+    errors.push("Invalid agentsJson structure: expected an object or an array.");
   }
 
   if (!agents.length) {
-    errors.push("请先创建至少 1 个 Agent");
+    errors.push("Please create at least 1 agent first.");
   }
 
   if (errors.length) return { manifest: null, warnings, errors };

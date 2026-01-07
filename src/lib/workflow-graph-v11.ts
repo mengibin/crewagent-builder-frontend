@@ -91,7 +91,7 @@ export function buildWorkflowGraphV11(params: {
   const edges = Array.isArray(params.edges) ? params.edges : [];
 
   if (!nodes.length) {
-    return { graph: null, warnings, errors: ["workflow.graph.json 生成失败：图中没有任何节点（nodes 为空）"] };
+    return { graph: null, warnings, errors: ["Failed to generate workflow.graph.json: graph has no nodes (nodes is empty)."] };
   }
 
   const nodesById = new Map<string, BuilderGraphNode>();
@@ -103,26 +103,26 @@ export function buildWorkflowGraphV11(params: {
   const nodeIds = Array.from(nodesById.keys());
   const duplicates = nodes.length - nodeIds.length;
   if (duplicates > 0) {
-    warnings.push(`检测到重复 nodeId（已按最后一次出现覆盖）：${duplicates} 个`);
+    warnings.push(`Detected duplicate nodeId(s) (last occurrence wins): ${duplicates}.`);
   }
 
   const invalidIds = nodeIds.filter((id) => !NODE_ID_PATTERN.test(id));
   if (invalidIds.length) {
-    errors.push(`存在不合法的 nodeId：${invalidIds.join(", ")}`);
+    errors.push(`Invalid nodeId(s): ${invalidIds.join(", ")}`);
   }
 
   const validEdges: Array<{ edge: BuilderGraphEdge; idx: number }> = [];
   edges.forEach((edge, idx) => {
     if (!edge?.source || !edge?.target) {
-      errors.push(`存在不完整的 edge（缺少 source/target）：index=${idx}`);
+      errors.push(`Incomplete edge (missing source/target): index=${idx}`);
       return;
     }
     if (!nodesById.has(edge.source)) {
-      errors.push(`edge.source 不存在：${edge.source}（index=${idx}）`);
+      errors.push(`edge.source not found: ${edge.source} (index=${idx})`);
       return;
     }
     if (!nodesById.has(edge.target)) {
-      errors.push(`edge.target 不存在：${edge.target}（index=${idx}）`);
+      errors.push(`edge.target not found: ${edge.target} (index=${idx})`);
       return;
     }
     validEdges.push({ edge, idx });
@@ -157,7 +157,7 @@ export function buildWorkflowGraphV11(params: {
     }
 
     if (visited !== nodeIds.length) {
-      errors.push("检测到循环依赖：请移除环形连线后再生成 workflow.graph.json");
+      errors.push("Cycle detected: remove cyclic edges before generating workflow.graph.json.");
     }
   }
 
@@ -165,14 +165,14 @@ export function buildWorkflowGraphV11(params: {
   const entryNodeId = (() => {
     if (startNodes.length === 1) return startNodes[0] ?? "";
     if (startNodes.length > 1) {
-      warnings.push(`检测到多起点：已选择 entryNodeId=${startNodes[0]}`);
+      warnings.push(`Multiple entry nodes detected: chose entryNodeId=${startNodes[0]}`);
       return startNodes[0] ?? "";
     }
     return "";
   })();
 
   if (!entryNodeId) {
-    errors.push("无法确定 entryNodeId：未找到入度为 0 的起点节点");
+    errors.push("Unable to determine entryNodeId: no start node with indegree 0 found.");
   }
 
   if (errors.length) return { graph: null, warnings, errors };
@@ -184,7 +184,7 @@ export function buildWorkflowGraphV11(params: {
       const node = nodesById.get(id);
       const rawType = node?.type;
       const type: WorkflowGraphV11NodeType = isNodeType(rawType) ? rawType : "step";
-      if (rawType && !isNodeType(rawType)) warnings.push(`未知 node.type（已回退为 step）：${id}:${String(rawType)}`);
+      if (rawType && !isNodeType(rawType)) warnings.push(`Unknown node.type (fallback to step): ${id}:${String(rawType)}`);
 
       const titleRaw = node?.data?.title;
       const title = typeof titleRaw === "string" ? titleRaw.trim() : "";
@@ -225,7 +225,7 @@ export function buildWorkflowGraphV11(params: {
     const chosenDefault = multi ? (defaults[0] ?? group[0]) : null;
     if (multi && defaults.length > 1) {
       const ids = defaults.map((d) => (typeof d.edge.id === "string" ? d.edge.id : stableEdgeSortKey(d.edge, d.idx)));
-      warnings.push(`同一节点存在多个 default edge（已保留第一个）：${source} -> ${ids.join(", ")}`);
+      warnings.push(`Multiple default edges for the same node (kept the first): ${source} -> ${ids.join(", ")}`);
     }
 
     group.forEach(({ edge }, idx) => {
@@ -260,4 +260,3 @@ export function buildWorkflowGraphV11(params: {
     errors,
   };
 }
-

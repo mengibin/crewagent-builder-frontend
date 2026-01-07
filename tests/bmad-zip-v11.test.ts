@@ -101,7 +101,7 @@ test("buildBmadZipBundleV11: blocks export when a node references missing step f
   });
 
   assert.equal(res.zipBytes, null);
-  assert.ok(res.errors.some((e) => e.includes("缺少 step 文件") || e.includes("stepFilesJson")));
+  assert.ok(res.errors.some((e) => e.includes("missing step file") || e.includes("stepFilesJson")));
 });
 
 test("buildBmadZipBundleV11: blocks export when a node references unknown agentId", async () => {
@@ -128,7 +128,7 @@ test("buildBmadZipBundleV11: blocks export when a node references unknown agentI
   });
 
   assert.equal(res.zipBytes, null);
-  assert.ok(res.errors.some((e) => e.includes("不存在的 agentId")));
+  assert.ok(res.errors.some((e) => e.includes("unknown agentId")));
 });
 
 test("buildBmadZipBundleV11: blocks export when workflowId is invalid", async () => {
@@ -153,7 +153,7 @@ test("buildBmadZipBundleV11: blocks export when workflowId is invalid", async ()
   });
 
   assert.equal(res.zipBytes, null);
-  assert.ok(res.errors.some((e) => e.includes("workflowId 不合法")));
+  assert.ok(res.errors.some((e) => e.includes("invalid workflowId")));
 });
 
 test("buildBmadZipBundleV11: blocks export when bmad.json.entry points to missing file", async () => {
@@ -207,7 +207,7 @@ test("buildBmadZipBundleV11: blocks export when stepFilesJson keys are not under
   });
 
   assert.equal(res.zipBytes, null);
-  assert.ok(res.errors.some((e) => e.includes("stepFilesJson key 不合法")));
+  assert.ok(res.errors.some((e) => e.includes("invalid stepFilesJson key")));
 });
 
 test("buildBmadZipBundleV11: blocks export when assets path is unsafe", async () => {
@@ -233,7 +233,7 @@ test("buildBmadZipBundleV11: blocks export when assets path is unsafe", async ()
   });
 
   assert.equal(res.zipBytes, null);
-  assert.ok(res.errors.some((e) => e.includes("assets 路径不合法")));
+  assert.ok(res.errors.some((e) => e.includes("Invalid assets path")));
 });
 
 test("buildBmadZipBundleV11: skips non-assets paths in assets map", async () => {
@@ -259,7 +259,7 @@ test("buildBmadZipBundleV11: skips non-assets paths in assets map", async () => 
   });
 
   assert.ok(res.zipBytes);
-  assert.ok(res.warnings.some((w) => w.includes("跳过非 assets/ 路径")));
+  assert.ok(res.warnings.some((w) => w.includes("Skipped non-assets/ path")));
 
   const zip = await JSZip.loadAsync(res.zipBytes);
   assert.ok(zip.file("assets/ok.txt"));

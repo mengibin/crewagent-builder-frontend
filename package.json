@@ -19,8 +19,11 @@
     "jszip": "^3.10.1",
     "next": "16.1.0",
     "react": "19.2.3",
+    "react-markdown": "^10.1.0",
     "react-dom": "19.2.3",
     "reactflow": "^11.11.4",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
     "yaml": "^2.6.1"
   },
   "devDependencies": {

@@ -18,7 +18,7 @@ export function parseAssetsJson(raw: string): AssetsJsonParseResult {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { assets: [], map: {}, totalBytes: 0, error: "assetsJson 格式不正确（应为 object）" };
+      return { assets: [], map: {}, totalBytes: 0, error: "Invalid assetsJson format (expected an object)." };
     }
 
     const map: Record<string, string> = {};
@@ -41,7 +41,7 @@ export function parseAssetsJson(raw: string): AssetsJsonParseResult {
     const totalBytes = assets.reduce((sum, item) => sum + item.bytes, 0);
     return { assets, map, totalBytes, error: null };
   } catch {
-    return { assets: [], map: {}, totalBytes: 0, error: "assetsJson 解析失败（非法 JSON）" };
+    return { assets: [], map: {}, totalBytes: 0, error: "Failed to parse assetsJson (invalid JSON)." };
   }
 }
 
@@ -50,19 +50,21 @@ const ALLOWED_ASSET_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml
 
 export function normalizeAssetsPath(input: string): { value: string | null; error: string | null } {
   const raw = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!raw) return { value: null, error: "path 不能为空" };
-  if (raw.startsWith("/")) return { value: null, error: "path 必须是相对路径" };
-  if (!raw.startsWith("assets/")) return { value: null, error: "path 必须以 assets/ 开头" };
-  if (raw.endsWith("/")) return { value: null, error: "path 必须是文件路径（不能以 / 结尾）" };
-  if (raw.includes("\u0000")) return { value: null, error: "path 不能包含空字符" };
-  if (!ASSET_PATH_PATTERN.test(raw)) return { value: null, error: "path 含非法字符（仅允许 A-Z a-z 0-9 . _ / -）" };
-  if (raw.split("/").some((part) => part === "" || part === "." || part === "..")) return { value: null, error: "path 不能包含 . 或 .." };
+  if (!raw) return { value: null, error: "path cannot be empty." };
+  if (raw.startsWith("/")) return { value: null, error: "path must be a relative path." };
+  if (!raw.startsWith("assets/")) return { value: null, error: "path must start with assets/." };
+  if (raw.endsWith("/")) return { value: null, error: "path must be a file path (must not end with /)." };
+  if (raw.includes("\u0000")) return { value: null, error: "path must not contain a null character." };
+  if (!ASSET_PATH_PATTERN.test(raw))
+    return { value: null, error: "path contains invalid characters (allowed: A-Z a-z 0-9 . _ / -)." };
+  if (raw.split("/").some((part) => part === "" || part === "." || part === ".."))
+    return { value: null, error: "path must not contain '.' or '..' segments." };
   const dot = raw.lastIndexOf(".");
   const ext = dot >= 0 ? raw.slice(dot).toLowerCase() : "";
   if (!ALLOWED_ASSET_EXTENSIONS.has(ext)) {
     return {
       value: null,
-      error: `不支持的扩展名：${ext || "(none)"}（仅支持 ${Array.from(ALLOWED_ASSET_EXTENSIONS).join(" ")}）`,
+      error: `Unsupported extension: ${ext || "(none)"} (allowed: ${Array.from(ALLOWED_ASSET_EXTENSIONS).join(" ")})`,
     };
   }
   return { value: raw, error: null };
@@ -72,4 +74,3 @@ export function toRuntimeAssetPath(zipPath: string): string {
   const cleaned = zipPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   return cleaned.startsWith("assets/") ? `@pkg/${cleaned}` : `@pkg/assets/${cleaned.replace(/^\/+/, "")}`;
 }
-

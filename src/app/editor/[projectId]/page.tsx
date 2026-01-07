@@ -22,13 +22,13 @@ function pickDefaultWorkflow(list: WorkflowListItem[]): WorkflowListItem | null 
 function formatLoadError(error: ApiError): { title: string; message: string } {
   switch (error.code) {
     case "PACKAGE_NOT_FOUND":
-      return { title: "项目不存在", message: "该项目不存在、已被删除，或你没有权限访问。" };
+      return { title: "Project not found", message: "This project doesn't exist, was deleted, or you don't have access." };
     case "VALIDATION_ERROR":
-      return { title: "项目 ID 无效", message: "URL 中的 projectId 不正确，请返回 Dashboard 重新打开。" };
+      return { title: "Invalid project ID", message: "The projectId in the URL is invalid. Go back to Dashboard and open it again." };
     case "NETWORK_ERROR":
-      return { title: "网络错误", message: "无法连接到后端服务，请稍后重试。" };
+      return { title: "Network error", message: "Unable to reach the backend service. Please try again later." };
     default:
-      return { title: "加载失败", message: error.message || "加载失败，请稍后重试。" };
+      return { title: "Failed to load", message: error.message || "Failed to load. Please try again later." };
   }
 }
 
@@ -58,14 +58,14 @@ export default function EditorProjectRedirectPage() {
           return;
         }
         if (!res.data) {
-          setError({ code: "BAD_RESPONSE", message: "服务返回格式不正确" });
+          setError({ code: "BAD_RESPONSE", message: "Unexpected server response." });
           setLoadedProjectId(projectId);
           return;
         }
 
         const target = pickDefaultWorkflow(res.data);
         if (!target) {
-          setError({ code: "NO_WORKFLOWS", message: "该项目没有工作流，请先在 ProjectBuilder 创建。" });
+          setError({ code: "NO_WORKFLOWS", message: "This project has no workflows yet. Create one in ProjectBuilder first." });
           setLoadedProjectId(projectId);
           return;
         }
@@ -74,7 +74,7 @@ export default function EditorProjectRedirectPage() {
       })
       .catch(() => {
         if (cancelled) return;
-        setError({ code: "NETWORK_ERROR", message: "网络错误，请稍后重试" });
+        setError({ code: "NETWORK_ERROR", message: "Network error. Please try again later." });
         setLoadedProjectId(projectId);
       });
 
@@ -90,7 +90,7 @@ export default function EditorProjectRedirectPage() {
     return (
       <main className="min-h-screen bg-zinc-50 text-zinc-950">
         <div className="mx-auto max-w-3xl px-6 py-16">
-          <p className="text-sm text-zinc-600">正在跳转...</p>
+          <p className="text-sm text-zinc-600">Redirecting...</p>
         </div>
       </main>
     );
@@ -100,7 +100,7 @@ export default function EditorProjectRedirectPage() {
     <main className="min-h-screen bg-zinc-50 text-zinc-950">
       <div className="mx-auto max-w-3xl px-6 py-16">
         <h1 className="text-2xl font-semibold tracking-tight">Workflow Editor</h1>
-        <p className="mt-2 text-sm text-zinc-600">正在打开默认工作流…</p>
+        <p className="mt-2 text-sm text-zinc-600">Opening default workflow…</p>
 
         {apiEnvError ? (
           <div
@@ -126,7 +126,7 @@ export default function EditorProjectRedirectPage() {
             href={projectId ? `/builder/${projectId}` : "/dashboard"}
             className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
           >
-            返回 ProjectBuilder
+            Back to ProjectBuilder
           </Link>
           <button
             type="button"
@@ -136,11 +136,10 @@ export default function EditorProjectRedirectPage() {
             }}
             className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
           >
-            退出登录
+            Sign out
           </button>
         </div>
       </div>
     </main>
   );
 }
-

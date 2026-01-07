@@ -28,39 +28,39 @@ function buildHint(err: ErrorObject): string | null {
   if (!err) return null;
   if (err.keyword === "additionalProperties") {
     const param = (err.params as { additionalProperty?: unknown } | undefined)?.additionalProperty;
-    if (typeof param === "string" && param.trim()) return `存在未允许字段：${param}`;
+    if (typeof param === "string" && param.trim()) return `Additional property not allowed: ${param}`;
   }
   if (err.keyword === "required") {
     const param = (err.params as { missingProperty?: unknown } | undefined)?.missingProperty;
-    if (typeof param === "string" && param.trim()) return `缺少必填字段：${param}`;
+    if (typeof param === "string" && param.trim()) return `Missing required field: ${param}`;
   }
   if (err.keyword === "minItems") {
     const limit = (err.params as { limit?: unknown } | undefined)?.limit;
-    if (typeof limit === "number") return `数量不足（minItems=${limit}）`;
+    if (typeof limit === "number") return `Not enough items (minItems=${limit})`;
   }
   if (err.keyword === "minLength") {
     const limit = (err.params as { limit?: unknown } | undefined)?.limit;
-    if (typeof limit === "number") return `长度不足（minLength=${limit}）`;
+    if (typeof limit === "number") return `Too short (minLength=${limit})`;
   }
   if (err.keyword === "maxLength") {
     const limit = (err.params as { limit?: unknown } | undefined)?.limit;
-    if (typeof limit === "number") return `长度超限（maxLength=${limit}）`;
+    if (typeof limit === "number") return `Too long (maxLength=${limit})`;
   }
   if (err.keyword === "minimum") {
     const limit = (err.params as { limit?: unknown } | undefined)?.limit;
-    if (typeof limit === "number") return `值过小（minimum=${limit}）`;
+    if (typeof limit === "number") return `Value is too small (minimum=${limit})`;
   }
   if (err.keyword === "maximum") {
     const limit = (err.params as { limit?: unknown } | undefined)?.limit;
-    if (typeof limit === "number") return `值过大（maximum=${limit}）`;
+    if (typeof limit === "number") return `Value is too large (maximum=${limit})`;
   }
   if (err.keyword === "type") {
     const t = (err.params as { type?: unknown } | undefined)?.type;
-    if (typeof t === "string" && t.trim()) return `类型不匹配（期望 ${t}）`;
+    if (typeof t === "string" && t.trim()) return `Type mismatch (expected ${t})`;
   }
   if (err.keyword === "format") {
     const format = (err.params as { format?: unknown } | undefined)?.format;
-    if (typeof format === "string" && format.trim()) return `格式不合法（format=${format}）`;
+    if (typeof format === "string" && format.trim()) return `Invalid format (format=${format})`;
   }
   if (err.keyword === "enum") {
     const allowed = (err.params as { allowedValues?: unknown } | undefined)?.allowedValues;
@@ -76,12 +76,12 @@ function buildHint(err: ErrorObject): string | null {
         })
         .join(", ");
       const suffix = allowed.length > 6 ? ` ... (+${allowed.length - 6})` : "";
-      return `允许值：${sample}${suffix}`;
+      return `Allowed values: ${sample}${suffix}`;
     }
-    return "值不在允许范围内";
+    return "Value is not in the allowed set.";
   }
   if (err.keyword === "pattern") {
-    return "格式不合法（pattern 不匹配）";
+    return "Invalid format (pattern mismatch).";
   }
   return null;
 }
@@ -114,7 +114,7 @@ function parseJsonObject(params: { filePath: string; value: unknown; issues: Exp
       severity: "error",
       filePath: params.filePath,
       kind: "schema",
-      message: "缺少文件或内容不是文本，无法校验 JSON schema",
+      message: "Missing file or content is not text; cannot validate JSON schema.",
     });
     return null;
   }
@@ -124,7 +124,7 @@ function parseJsonObject(params: { filePath: string; value: unknown; issues: Exp
       severity: "error",
       filePath: params.filePath,
       kind: "schema",
-      message: "文件为空，无法校验 JSON schema",
+      message: "File is empty; cannot validate JSON schema.",
     });
     return null;
   }
@@ -135,7 +135,7 @@ function parseJsonObject(params: { filePath: string; value: unknown; issues: Exp
         severity: "error",
         filePath: params.filePath,
         kind: "schema",
-        message: "JSON 根节点必须是 object",
+        message: "JSON root must be an object.",
       });
       return null;
     }
@@ -145,7 +145,7 @@ function parseJsonObject(params: { filePath: string; value: unknown; issues: Exp
       severity: "error",
       filePath: params.filePath,
       kind: "schema",
-      message: "非法 JSON：无法解析",
+      message: "Invalid JSON: unable to parse.",
     });
     return null;
   }
@@ -158,7 +158,7 @@ function ensureText(params: { filePath: string; value: unknown; issues: ExportVa
       severity: "error",
       filePath: params.filePath,
       kind: "frontmatter",
-      message: "缺少文件或内容不是文本，无法解析 frontmatter",
+      message: "Missing file or content is not text; cannot parse frontmatter.",
     });
     return null;
   }
@@ -168,7 +168,7 @@ function ensureText(params: { filePath: string; value: unknown; issues: ExportVa
       severity: "error",
       filePath: params.filePath,
       kind: "frontmatter",
-      message: "文件为空，无法解析 frontmatter",
+      message: "File is empty; cannot parse frontmatter.",
     });
     return null;
   }
@@ -259,7 +259,7 @@ export function validateExportBundleV11(params: {
           severity: "error",
           filePath: workflowMdPath,
           kind: "frontmatter",
-          message: parsed.error ?? "frontmatter 解析失败",
+          message: parsed.error ?? "Failed to parse frontmatter.",
         });
       } else {
         const validate = getWorkflowFrontmatterSchemaValidatorV11();
@@ -281,7 +281,7 @@ export function validateExportBundleV11(params: {
           severity: "error",
           filePath: path,
           kind: "frontmatter",
-          message: parsed.error ?? "frontmatter 解析失败",
+          message: parsed.error ?? "Failed to parse frontmatter.",
         });
         return;
       }

@@ -62,7 +62,7 @@ test("buildAgentsManifestV11: errors on invalid agentId (v1.1 manifest)", () => 
 
   const res = buildAgentsManifestV11({ agentsJsonRaw: raw });
   assert.equal(res.manifest, null);
-  assert.ok(res.errors.some((e) => e.includes("不合法")));
+  assert.ok(res.errors.some((e) => e.includes("is invalid")));
 });
 
 test("buildAgentsManifestV11: errors on duplicate agentId (v1.1 manifest)", () => {
@@ -94,7 +94,7 @@ test("buildAgentsManifestV11: errors on duplicate agentId (v1.1 manifest)", () =
 
   const res = buildAgentsManifestV11({ agentsJsonRaw: raw });
   assert.equal(res.manifest, null);
-  assert.ok(res.errors.some((e) => e.includes("重复")));
+  assert.ok(res.errors.some((e) => e.includes("Duplicate agentId")));
 });
 
 test("buildAgentsManifestV11: legacy array produces v1.1 manifest", () => {

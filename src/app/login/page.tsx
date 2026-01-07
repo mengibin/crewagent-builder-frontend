@@ -13,24 +13,38 @@ type LoginErrors = Partial<Record<LoginField, string>>;
 type RegisterField = "email" | "username" | "password";
 type RegisterErrors = Partial<Record<RegisterField, string>>;
 
+function parseValidationFieldErrors<T extends string>(
+  details: unknown,
+  fields: readonly T[],
+): Partial<Record<T, string>> | null {
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const obj = details as Record<string, unknown>;
+  const out: Partial<Record<T, string>> = {};
+  for (const field of fields) {
+    const value = obj[field];
+    if (typeof value === "string" && value.trim()) out[field] = value;
+  }
+  return out;
+}
+
 function validateEmail(email: string): string | null {
   const trimmed = email.trim();
-  if (!trimmed) return "Email 为必填";
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return "Email 格式不正确";
+  if (!trimmed) return "Email is required.";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return "Invalid email format.";
   return null;
 }
 
 function validateUsername(username: string): string | null {
   const trimmed = username.trim();
-  if (!trimmed) return "Username 为必填";
-  if (trimmed.length < 3 || trimmed.length > 32) return "Username 需为 3-32 个字符";
-  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) return "Username 仅允许字母、数字、_、-";
+  if (!trimmed) return "Username is required.";
+  if (trimmed.length < 3 || trimmed.length > 32) return "Username must be 3–32 characters.";
+  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) return "Username may contain only letters, numbers, _ and -.";
   return null;
 }
 
 function validatePassword(password: string): string | null {
-  if (!password) return "Password 为必填";
-  if (password.length < 8) return "Password 至少 8 位";
+  if (!password) return "Password is required.";
+  if (password.length < 8) return "Password must be at least 8 characters.";
   return null;
 }
 
@@ -92,12 +106,8 @@ export default function LoginPage() {
 
       if (result.error) {
         if (result.error.code === "VALIDATION_ERROR" && result.error.details) {
-          const details = result.error.details;
-          setLoginErrors((prev) => ({
-            ...prev,
-            email: details.email ?? prev.email,
-            password: details.password ?? prev.password,
-          }));
+          const errors = parseValidationFieldErrors(result.error.details, ["email", "password"] as const);
+          if (errors) setLoginErrors((prev) => ({ ...prev, ...errors }));
         }
 
         setLoginSubmitError(result.error.message);
@@ -105,14 +115,14 @@ export default function LoginPage() {
       }
 
       if (!result.data?.accessToken) {
-        setLoginSubmitError("服务返回异常，请稍后再试");
+        setLoginSubmitError("Unexpected server response. Please try again later.");
         return;
       }
 
       setAccessToken(result.data.accessToken);
       router.replace("/dashboard");
     } catch {
-      setLoginSubmitError("操作失败，请稍后再试");
+      setLoginSubmitError("Request failed. Please try again.");
     } finally {
       setIsLoginSubmitting(false);
     }
@@ -149,27 +159,22 @@ export default function LoginPage() {
 
       if (result.error) {
         if (result.error.code === "VALIDATION_ERROR" && result.error.details) {
-          const details = result.error.details;
-          setRegisterErrors((prev) => ({
-            ...prev,
-            email: details.email ?? prev.email,
-            username: details.username ?? prev.username,
-            password: details.password ?? prev.password,
-          }));
+          const errors = parseValidationFieldErrors(result.error.details, ["email", "username", "password"] as const);
+          if (errors) setRegisterErrors((prev) => ({ ...prev, ...errors }));
         }
         setRegisterSubmitError(result.error.message);
         return;
       }
 
       if (!result.data?.accessToken) {
-        setRegisterSubmitError("服务返回异常，请稍后再试");
+        setRegisterSubmitError("Unexpected server response. Please try again later.");
         return;
       }
 
       setAccessToken(result.data.accessToken);
       router.replace("/dashboard");
     } catch {
-      setRegisterSubmitError("操作失败，请稍后再试");
+      setRegisterSubmitError("Request failed. Please try again.");
     } finally {
       setIsRegisterSubmitting(false);
     }
@@ -183,7 +188,7 @@ export default function LoginPage() {
             <h1 className="text-xl font-semibold tracking-tight">CrewAgent Builder</h1>
             <span className="text-xs text-zinc-500">Epic 2 · Auth</span>
           </div>
-          <p className="mt-1 text-sm text-zinc-600">登录/注册以继续</p>
+          <p className="mt-1 text-sm text-zinc-600">Log in or sign up to continue</p>
 
           {apiEnvError ? (
             <div
@@ -205,7 +210,7 @@ export default function LoginPage() {
                   : "text-zinc-600 hover:text-zinc-950",
               ].join(" ")}
             >
-              登录
+              Log in
             </button>
             <button
               type="button"
@@ -217,7 +222,7 @@ export default function LoginPage() {
                   : "text-zinc-600 hover:text-zinc-950",
               ].join(" ")}
             >
-              注册
+              Sign up
             </button>
           </div>
 
@@ -287,17 +292,17 @@ export default function LoginPage() {
                 disabled={isLoginSubmitting || Boolean(apiEnvError)}
                 className="inline-flex w-full items-center justify-center rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isLoginSubmitting ? "登录中..." : "登录"}
+                {isLoginSubmitting ? "Logging in..." : "Log in"}
               </button>
 
               <p className="text-center text-xs text-zinc-500">
-                还没有账号？{" "}
+                Don&apos;t have an account?{" "}
                 <button
                   type="button"
                   onClick={() => setActiveTab("register")}
                   className="font-medium text-zinc-900 underline underline-offset-4 hover:text-zinc-700"
                 >
-                  去注册
+                  Sign up
                 </button>
               </p>
             </form>
@@ -395,7 +400,7 @@ export default function LoginPage() {
                 disabled={isRegisterSubmitting || Boolean(apiEnvError)}
                 className="inline-flex w-full items-center justify-center rounded-lg bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isRegisterSubmitting ? "注册中..." : "注册"}
+                {isRegisterSubmitting ? "Signing up..." : "Sign up"}
               </button>
             </form>
           )}

@@ -56,18 +56,18 @@ export function sanitizeFilename(input: string): string {
 function parseJsonObject(raw: string, label: string, errors: string[]): Record<string, unknown> | null {
   const trimmed = raw.trim();
   if (!trimmed) {
-    errors.push(`${label} 为空`);
+    errors.push(`${label} is empty.`);
     return null;
   }
   try {
     const value = JSON.parse(trimmed) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-      errors.push(`${label} 格式不正确（应为对象）`);
+      errors.push(`${label} has invalid format (expected an object).`);
       return null;
     }
     return value as Record<string, unknown>;
   } catch {
-    errors.push(`${label} 解析失败（非法 JSON）`);
+    errors.push(`${label} failed to parse (invalid JSON).`);
     return null;
   }
 }
@@ -79,7 +79,7 @@ function parseStepFilesJson(raw: string, workflowLabel: string, errors: string[]
   for (const [k, v] of Object.entries(obj)) {
     if (typeof k !== "string") continue;
     if (typeof v !== "string") {
-      errors.push(`${workflowLabel}.stepFilesJson 中存在非字符串内容：${k}`);
+      errors.push(`${workflowLabel}.stepFilesJson contains non-string content: ${k}`);
       continue;
     }
     out[k] = v;
@@ -96,7 +96,7 @@ function parseBuilderGraphJson(raw: string, workflowLabel: string, errors: strin
   const nodes = Array.isArray(nodesRaw) ? (nodesRaw as BuilderGraphNode[]) : [];
   const edges = Array.isArray(edgesRaw) ? (edgesRaw as BuilderGraphEdge[]) : [];
   if (!nodes.length) {
-    errors.push(`${workflowLabel}.graphJson.nodes 为空`);
+    errors.push(`${workflowLabel}.graphJson.nodes is empty`);
     return null;
   }
   return { nodes, edges };
@@ -105,7 +105,7 @@ function parseBuilderGraphJson(raw: string, workflowLabel: string, errors: strin
 function extractEntryPaths(bmadJson: Record<string, unknown>, errors: string[]): { workflow: string; graph: string; agents: string } | null {
   const entry = bmadJson.entry;
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-    errors.push("bmad.json.entry 缺失或不合法");
+    errors.push("bmad.json.entry is missing or invalid.");
     return null;
   }
   const entryObj = entry as Record<string, unknown>;
@@ -113,7 +113,7 @@ function extractEntryPaths(bmadJson: Record<string, unknown>, errors: string[]):
   const graph = typeof entryObj.graph === "string" ? entryObj.graph.trim() : "";
   const agents = typeof entryObj.agents === "string" ? entryObj.agents.trim() : "";
   if (!workflow || !graph || !agents) {
-    errors.push("bmad.json.entry.workflow/graph/agents 缺失");
+    errors.push("bmad.json.entry.workflow/graph/agents is missing.");
     return null;
   }
   return { workflow, graph, agents };
@@ -161,7 +161,7 @@ export function buildBmadExportFilesV11(params: {
 
   const workflows = Array.isArray(params.workflows) ? params.workflows : [];
   if (!workflows.length) {
-    return { filename, filesByPath: null, errors: ["没有可导出的 workflow（workflows 为空）"], warnings };
+    return { filename, filesByPath: null, errors: ["No workflows to export (workflows is empty)."], warnings };
   }
 
   const filesByPath: ExportFilesByPathV11 = {};
@@ -178,11 +178,11 @@ export function buildBmadExportFilesV11(params: {
     for (const [rawPath, value] of Object.entries(assets)) {
       const normalized = normalizeZipPath(rawPath);
       if (!normalized.startsWith("assets/")) {
-        warnings.push(`跳过非 assets/ 路径：${normalized}`);
+        warnings.push(`Skipped non-assets/ path: ${normalized}`);
         continue;
       }
       if (!isSafeZipPath(normalized)) {
-        errors.push(`assets 路径不合法：${normalized}`);
+        errors.push(`Invalid assets path: ${normalized}`);
         continue;
       }
       filesByPath[normalized] = value;
@@ -194,13 +194,13 @@ export function buildBmadExportFilesV11(params: {
     const workflowId = String(wf.id).trim();
     const workflowLabel = `workflow(${wf.name || workflowId},ID:${wf.id})`;
     if (!workflowId || !WORKFLOW_ID_PATTERN.test(workflowId)) {
-      errors.push(`${workflowLabel} 的 workflowId 不合法：${workflowId}`);
+      errors.push(`${workflowLabel} has invalid workflowId: ${workflowId}`);
       continue;
     }
 
     const workflowMd = wf.workflowMd?.trim() ?? "";
     if (!workflowMd) {
-      errors.push(`${workflowLabel} 缺少 workflowMd：请在 Editor 保存以生成 v1.1 workflow.md`);
+      errors.push(`${workflowLabel} is missing workflowMd: save in the Editor to generate v1.1 workflow.md.`);
       continue;
     }
     const workflowMdPath = `workflows/${workflowId}/workflow.md`;
@@ -215,15 +215,15 @@ export function buildBmadExportFilesV11(params: {
     for (const [rawKey, content] of Object.entries(stepFiles)) {
       const key = normalizeZipPath(rawKey);
       if (!key.startsWith("steps/")) {
-        errors.push(`${workflowLabel} 的 stepFilesJson key 不合法（必须以 steps/ 开头）：${key}`);
+        errors.push(`${workflowLabel} has invalid stepFilesJson key (must start with steps/): ${key}`);
         continue;
       }
       if (!isSafeZipPath(key)) {
-        errors.push(`${workflowLabel} 的 stepFilesJson key 不合法：${key}`);
+        errors.push(`${workflowLabel} has invalid stepFilesJson key: ${key}`);
         continue;
       }
       if (!content.trim()) {
-        errors.push(`${workflowLabel} 的 step 文件内容为空：${key}`);
+        errors.push(`${workflowLabel} has empty step file content: ${key}`);
         continue;
       }
       stepFilesNormalized[key] = content;
@@ -242,7 +242,7 @@ export function buildBmadExportFilesV11(params: {
       edges: graphPayload.edges,
     });
     if (!graphBuild.graph) {
-      errors.push(`${workflowLabel} 无法生成 workflow.graph.json：${graphBuild.errors.join("；")}`);
+      errors.push(`${workflowLabel} failed to generate workflow.graph.json: ${graphBuild.errors.join("; ")}`);
       continue;
     }
     graphBuild.warnings.forEach((w) => warnings.push(`${workflowLabel}: ${w}`));
@@ -250,21 +250,21 @@ export function buildBmadExportFilesV11(params: {
     const rewrittenNodes: WorkflowGraphV11["nodes"] = graphBuild.graph.nodes.map((node) => {
       const file = normalizeZipPath(node.file);
       if (!file.startsWith("steps/")) {
-        errors.push(`${workflowLabel} node.file 不合法（必须以 steps/ 开头）：${node.id}:${file}`);
+        errors.push(`${workflowLabel} has invalid node.file (must start with steps/): ${node.id}:${file}`);
       } else if (!isSafeZipPath(file)) {
-        errors.push(`${workflowLabel} node.file 不合法：${node.id}:${file}`);
+        errors.push(`${workflowLabel} has invalid node.file: ${node.id}:${file}`);
       } else if (!stepFilesNormalized[file]) {
-        errors.push(`${workflowLabel} 缺少 step 文件：${file}（nodeId=${node.id}）`);
+        errors.push(`${workflowLabel} is missing step file: ${file} (nodeId=${node.id})`);
       } else {
         const full = `workflows/${workflowId}/${file}`;
         if (!stepFullPaths.has(full)) {
-          errors.push(`${workflowLabel} ZIP 中缺少 step 文件：${full}`);
+          errors.push(`${workflowLabel} ZIP is missing step file: ${full}`);
         }
       }
 
       const agentId = node.agentId?.trim() ?? "";
       if (agentId && !agentIds.has(agentId)) {
-        errors.push(`${workflowLabel} 引用了不存在的 agentId：${agentId}（nodeId=${node.id}）`);
+        errors.push(`${workflowLabel} references unknown agentId: ${agentId} (nodeId=${node.id})`);
       }
 
       return {
@@ -289,7 +289,7 @@ export function buildBmadExportFilesV11(params: {
 
   const expected = [entryPaths.workflow, entryPaths.graph, entryPaths.agents].map(normalizeZipPath);
   expected.forEach((path) => {
-    if (!filePaths.has(path)) errors.push(`ZIP 缺少 bmad.json.entry 指向的文件：${path}`);
+    if (!filePaths.has(path)) errors.push(`ZIP is missing file referenced by bmad.json.entry: ${path}`);
   });
 
   if (errors.length) {
@@ -315,6 +315,11 @@ export async function buildBmadZipBundleV11(params: {
     const zipBytes = await buildZipBytesFromFiles(build.filesByPath);
     return { filename: build.filename, zipBytes, errors: build.errors, warnings: build.warnings };
   } catch {
-    return { filename: build.filename, zipBytes: null, errors: ["导出失败：无法生成 ZIP bytes"], warnings: build.warnings };
+    return {
+      filename: build.filename,
+      zipBytes: null,
+      errors: ["Export failed: unable to generate ZIP bytes."],
+      warnings: build.warnings,
+    };
   }
 }

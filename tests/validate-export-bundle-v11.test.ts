@@ -88,7 +88,7 @@ test("validateExportBundleV11: reports missing frontmatter as actionable error",
 
   const res = validateExportBundleV11({ filesByPath });
   assert.equal(res.ok, false);
-  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/workflow.md" && i.message.includes("缺少 frontmatter")));
+  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/workflow.md" && i.message.includes("Missing frontmatter")));
 });
 
 test("validateExportBundleV11: reports unclosed frontmatter as actionable error", () => {
@@ -97,7 +97,7 @@ test("validateExportBundleV11: reports unclosed frontmatter as actionable error"
 
   const res = validateExportBundleV11({ filesByPath });
   assert.equal(res.ok, false);
-  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/steps/step-1.md" && i.message.includes("未闭合")));
+  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/steps/step-1.md" && i.message.includes("not closed")));
 });
 
 test("validateExportBundleV11: reports leading whitespace before frontmatter as actionable error", () => {
@@ -107,7 +107,7 @@ test("validateExportBundleV11: reports leading whitespace before frontmatter as 
 
   const res = validateExportBundleV11({ filesByPath });
   assert.equal(res.ok, false);
-  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/steps/step-1.md" && i.message.includes("前置空行")));
+  assert.ok(res.issues.some((i) => i.filePath === "workflows/1/steps/step-1.md" && i.message.includes("beginning of the file")));
 });
 
 test("validateExportBundleV11: reports additionalProperties with hint", () => {
