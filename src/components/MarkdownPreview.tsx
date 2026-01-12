@@ -2,14 +2,17 @@
 
 import React from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 
 export function MarkdownPreview(props: { markdown: string; emptyText?: string }) {
   return (
     <div className="space-y-3 text-sm leading-6 text-zinc-900">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           h1: ({ node: _node, ...p }) => ((void _node), <h1 {...p} className="text-xl font-semibold text-zinc-950" />),
           h2: ({ node: _node, ...p }) => ((void _node), <h2 {...p} className="text-lg font-semibold text-zinc-950" />),
