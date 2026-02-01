@@ -253,6 +253,27 @@ export default function DashboardPage() {
 
         <section className="mt-10">
           <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-semibold text-zinc-900">Builder Tools</h2>
+            <span className="text-xs text-zinc-500">1 tool</span>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <Link
+              href="/tools/license-generator"
+              className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm transition hover:border-zinc-300"
+            >
+              <p className="text-sm font-semibold text-zinc-950">License Generator</p>
+              <p className="mt-2 text-xs text-zinc-500">
+                Generate signed offline license keys from Machine IDs.
+              </p>
+              <span className="mt-4 inline-flex text-xs font-medium text-zinc-900 underline underline-offset-4">
+                Open tool
+              </span>
+            </Link>
+          </div>
+        </section>
+
+        <section className="mt-10">
+          <div className="flex items-baseline justify-between">
             <h2 className="text-sm font-semibold text-zinc-900">My Projects</h2>
             <span className="text-xs text-zinc-500">{packages.length} projects</span>
           </div>

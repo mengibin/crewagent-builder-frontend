@@ -8,9 +8,9 @@ import type { ErrorObject } from "ajv";
 import Ajv2020 from "ajv/dist/2020";
 
 import { clearAccessToken } from "@/lib/auth";
-import { parseAssetsJson } from "@/lib/assets-v11";
+import { normalizeAssetsPath, parseAssetsJson } from "@/lib/assets-v11";
 import workflowGraphSchemaV11 from "@/lib/bmad-spec/v1.1/workflow-graph.schema.json";
-import { getApiBaseUrl, getJson, putJson } from "@/lib/api-client";
+import { deleteJsonWithBody, getApiBaseUrl, getJson, postJson, putJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import { isValidAgentId, uniqueAgentId } from "@/lib/utils";
 import { buildWorkflowGraphV11 } from "@/lib/workflow-graph-v11";
@@ -49,6 +49,45 @@ type WorkflowDetail = {
 
 type PackageAssetsOut = {
   assetsJson: string;
+};
+
+type AiStepMode = "create" | "optimize";
+
+type AiStepNodeDraft = {
+  id: string;
+  type: WorkflowNodeType;
+  title: string;
+  agentId: string;
+  inputs: string[];
+  outputs: string[];
+  setsVariables: string[];
+  goal: string;
+  instructions: string;
+  completion: string;
+};
+
+type AiStepDraftRequest = {
+  mode: AiStepMode;
+  userPrompt?: string | null;
+  node: AiStepNodeDraft;
+  context?: {
+    workflowName?: string | null;
+    workflowVariables?: string[];
+    incomingEdges?: Array<Record<string, unknown>>;
+    outgoingEdges?: Array<Record<string, unknown>>;
+  } | null;
+};
+
+type AiAssetUpsert = { path: string; content: string };
+
+type AiStepDraftOut = {
+  mode: AiStepMode;
+  nodeId: string;
+  suggested: Omit<AiStepNodeDraft, "id">;
+  assets: { upsert: AiAssetUpsert[]; delete: string[] };
+  notes: string[];
+  provider?: string | null;
+  model?: string | null;
 };
 
 type WorkflowNodeType = "step" | "decision" | "merge" | "end" | "subworkflow";
@@ -906,6 +945,11 @@ export default function EditorPage() {
   const [assetsJsonRaw, setAssetsJsonRaw] = useState<string>("{}");
   const [assetsError, setAssetsError] = useState<string | null>(null);
 
+  const [aiPromptDraft, setAiPromptDraft] = useState<string>("");
+  const [aiStatus, setAiStatus] = useState<"idle" | "loading" | "applying">("idle");
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiSuggestion, setAiSuggestion] = useState<AiStepDraftOut | null>(null);
+
   const [paletteOpen, setPaletteOpen] = useState(true);
 
   const projectId = params?.projectId;
@@ -1160,7 +1204,210 @@ export default function EditorPage() {
     setInspectorError(null);
   }, [selectedNode?.id]);
 
+  useEffect(() => {
+    setAiError(null);
+    setAiSuggestion(null);
+  }, [selectedNode?.id]);
+
   const nodeIdPattern = useMemo(() => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, []);
+
+  const requestAiStepDraft = useCallback(
+    async (mode: AiStepMode) => {
+      if (!ready) return;
+      if (apiEnvError) return;
+      if (!projectId || !workflowId) return;
+      if (!selectedNode) return;
+      if (aiStatus !== "idle") return;
+
+      const userPrompt = aiPromptDraft.trim() || null;
+      if (mode === "create" && !userPrompt) {
+        setAiError("Please describe what you want to generate (prompt is required for Generate).");
+        return;
+      }
+
+      setAiStatus("loading");
+      setAiError(null);
+
+      const incomingEdges = edges
+        .filter((e) => e.target === selectedNode.id)
+        .map((e) => ({
+          from: e.source,
+          to: e.target,
+          label: typeof e.label === "string" ? e.label : "",
+          conditionText: e.data?.conditionText ?? "",
+          isDefault: Boolean(e.data?.isDefault),
+        }));
+      const outgoingEdges = edges
+        .filter((e) => e.source === selectedNode.id)
+        .map((e) => ({
+          from: e.source,
+          to: e.target,
+          label: typeof e.label === "string" ? e.label : "",
+          conditionText: e.data?.conditionText ?? "",
+          isDefault: Boolean(e.data?.isDefault),
+        }));
+      const workflowVariableKeys = workflowVariables.map((v) => v.key.trim()).filter(Boolean);
+
+      const body: AiStepDraftRequest = {
+        mode,
+        userPrompt,
+        node: {
+          id: selectedNode.id,
+          type: (selectedNode.type ?? "step") as WorkflowNodeType,
+          title: selectedNode.data?.title ?? "",
+          agentId: selectedNode.data?.agentId ?? "",
+          inputs: Array.isArray(selectedNode.data?.inputs) ? selectedNode.data.inputs : [],
+          outputs: Array.isArray(selectedNode.data?.outputs) ? selectedNode.data.outputs : [],
+          setsVariables: Array.isArray(selectedNode.data?.setsVariables) ? selectedNode.data.setsVariables : [],
+          goal: selectedNode.data?.goal ?? "",
+          instructions: selectedNode.data?.instructions ?? "",
+          completion: selectedNode.data?.completion ?? "",
+        },
+        context: {
+          workflowName: workflow?.name ?? null,
+          workflowVariables: workflowVariableKeys,
+          incomingEdges,
+          outgoingEdges,
+        },
+      };
+
+      const res = await postJson<AiStepDraftOut>(
+        `/packages/${projectId}/workflows/${workflowId}/ai/step-draft`,
+        body,
+        { auth: true },
+      );
+
+      if (res.error || !res.data) {
+        setAiStatus("idle");
+        setAiError(res.error?.message ?? "AI request failed. Please try again.");
+        return;
+      }
+
+      setAiSuggestion(res.data);
+      setAiStatus("idle");
+    },
+    [
+      aiPromptDraft,
+      aiStatus,
+      apiEnvError,
+      edges,
+      projectId,
+      ready,
+      selectedNode,
+      workflow?.name,
+      workflowId,
+      workflowVariables,
+    ],
+  );
+
+  const applyAiStepSuggestion = useCallback(async () => {
+    if (!ready) return;
+    if (apiEnvError) return;
+    if (!projectId) return;
+    if (!selectedNodeId) return;
+    if (!aiSuggestion) return;
+    if (aiSuggestion.nodeId !== selectedNodeId) {
+      setAiError("Selected node changed; please request a new AI suggestion.");
+      setAiSuggestion(null);
+      return;
+    }
+    if (aiStatus !== "idle") return;
+
+    setAiStatus("applying");
+    setAiError(null);
+
+    const suggestion = aiSuggestion.suggested;
+    const current = selectedNode;
+    const stepTitle = (suggestion.title || current?.data?.title || selectedNodeId).trim();
+
+    const md = serializeStepMarkdown({
+      frontmatter: {
+        schemaVersion: "1.1",
+        nodeId: selectedNodeId,
+        type: (suggestion.type || (current?.type ?? "step")) as "step" | "decision" | "merge" | "end" | "subworkflow",
+        title: stepTitle,
+        agentId: suggestion.agentId ?? current?.data?.agentId ?? "",
+        inputs: Array.isArray(suggestion.inputs) ? suggestion.inputs : current?.data?.inputs ?? [],
+        outputs: Array.isArray(suggestion.outputs) ? suggestion.outputs : current?.data?.outputs ?? [],
+        setsVariables: Array.isArray(suggestion.setsVariables) ? suggestion.setsVariables : current?.data?.setsVariables ?? [],
+      },
+      sections: {
+        goal: suggestion.goal ?? current?.data?.goal ?? "",
+        instructions: suggestion.instructions ?? current?.data?.instructions ?? "",
+        completion: suggestion.completion ?? current?.data?.completion ?? "",
+      },
+      rawContent: "",
+    });
+
+    handleStepEditorChange(md);
+
+    const assetsPatch = aiSuggestion.assets ?? { upsert: [], delete: [] };
+    const normalizedUpserts: AiAssetUpsert[] = [];
+
+    for (const item of assetsPatch.upsert ?? []) {
+      const normalized = normalizeAssetsPath(item.path ?? "");
+      if (normalized.error || !normalized.value) {
+        setAiError(`Invalid asset path from AI: ${item.path} (${normalized.error ?? "invalid"})`);
+        continue;
+      }
+      normalizedUpserts.push({ path: normalized.value, content: String(item.content ?? "") });
+    }
+
+    const deletes = Array.isArray(assetsPatch.delete)
+      ? assetsPatch.delete.map((p) => String(p ?? "")).filter((p) => p.trim())
+      : [];
+
+    for (const rawPath of deletes) {
+      const normalized = normalizeAssetsPath(rawPath);
+      if (normalized.error || !normalized.value) continue;
+      await deleteJsonWithBody<PackageAssetsOut>(
+        `/packages/${projectId}/assets`,
+        { path: normalized.value },
+        { auth: true },
+      );
+    }
+
+    for (const item of normalizedUpserts) {
+      const updated = await putJson<PackageAssetsOut>(
+        `/packages/${projectId}/assets`,
+        { path: item.path, content: item.content },
+        { auth: true },
+      );
+      if (!updated.error) {
+        setAssetsJsonRaw(updated.data?.assetsJson ?? "{}");
+        continue;
+      }
+      if (updated.error.code !== "ASSET_NOT_FOUND") continue;
+
+      const created = await postJson<PackageAssetsOut>(
+        `/packages/${projectId}/assets`,
+        { path: item.path, content: item.content },
+        { auth: true },
+      );
+      if (!created.error) {
+        setAssetsJsonRaw(created.data?.assetsJson ?? "{}");
+      }
+    }
+
+    const refreshedAssets = await getJson<PackageAssetsOut>(`/packages/${projectId}/assets`, { auth: true });
+    if (!refreshedAssets.error && refreshedAssets.data) {
+      setAssetsJsonRaw(refreshedAssets.data.assetsJson ?? "{}");
+      setAssetsError(null);
+    }
+
+    setAiSuggestion(null);
+    setAiPromptDraft("");
+    setAiStatus("idle");
+  }, [
+    aiStatus,
+    aiSuggestion,
+    apiEnvError,
+    handleStepEditorChange,
+    projectId,
+    ready,
+    selectedNode,
+    selectedNodeId,
+  ]);
 
   const workflowVariablesIssues = useMemo(() => {
     const seen = new Set<string>();
@@ -1775,6 +2022,126 @@ export default function EditorPage() {
   const primaryStepStored = storedStepFiles[primaryStepFile] ?? "";
 
   return (
+    <>
+      {aiSuggestion ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-zinc-900">AI Suggestion</p>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Node: <span className="font-mono">{aiSuggestion.nodeId}</span>{" "}
+                  <span className="text-zinc-300">·</span> Mode:{" "}
+                  <span className="font-mono">{aiSuggestion.mode}</span>{" "}
+                  {aiSuggestion.provider ? (
+                    <>
+                      <span className="text-zinc-300">·</span>{" "}
+                      <span className="font-mono">{aiSuggestion.provider}</span>
+                    </>
+                  ) : null}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAiSuggestion(null)}
+                disabled={aiStatus !== "idle"}
+                className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] overflow-auto p-4">
+              {aiSuggestion.notes?.length ? (
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
+                  <p className="font-medium text-zinc-900">Notes</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    {aiSuggestion.notes.map((note, idx) => (
+                      <li key={`${idx}-${note}`}>{note}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <h4 className="text-sm font-semibold text-zinc-900">Current</h4>
+                  <p className="mt-2 text-xs text-zinc-600">Goal</p>
+                  <pre className="mt-1 max-h-48 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
+                    {selectedNode?.data?.goal ?? ""}
+                  </pre>
+                  <p className="mt-3 text-xs text-zinc-600">Instructions</p>
+                  <pre className="mt-1 max-h-64 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
+                    {selectedNode?.data?.instructions ?? ""}
+                  </pre>
+                </div>
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <h4 className="text-sm font-semibold text-zinc-900">Suggested</h4>
+                  <p className="mt-2 text-xs text-zinc-600">Goal</p>
+                  <pre className="mt-1 max-h-48 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
+                    {aiSuggestion.suggested?.goal ?? ""}
+                  </pre>
+                  <p className="mt-3 text-xs text-zinc-600">Instructions</p>
+                  <pre className="mt-1 max-h-64 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
+                    {aiSuggestion.suggested?.instructions ?? ""}
+                  </pre>
+                </div>
+              </div>
+
+              {(aiSuggestion.assets?.upsert?.length || aiSuggestion.assets?.delete?.length) ? (
+                <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+                  <h4 className="text-sm font-semibold text-zinc-900">Assets</h4>
+                  {aiSuggestion.assets.upsert?.length ? (
+                    <div className="mt-2">
+                      <p className="text-xs font-medium text-zinc-700">Upsert</p>
+                      <ul className="mt-1 space-y-1">
+                        {aiSuggestion.assets.upsert.map((asset) => (
+                          <li key={asset.path} className="text-xs text-zinc-700">
+                            <span className="font-mono">{asset.path}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {aiSuggestion.assets.delete?.length ? (
+                    <div className="mt-3">
+                      <p className="text-xs font-medium text-zinc-700">Delete</p>
+                      <ul className="mt-1 space-y-1">
+                        {aiSuggestion.assets.delete.map((path) => (
+                          <li key={path} className="text-xs text-zinc-700">
+                            <span className="font-mono">{path}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setAiSuggestion(null)}
+                disabled={aiStatus !== "idle"}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void applyAiStepSuggestion()}
+                disabled={aiStatus !== "idle"}
+                className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     <main className="min-h-screen bg-zinc-50 text-zinc-950">
       <div className="flex min-h-screen flex-col px-6 py-6">
         <header className="flex flex-wrap items-start justify-between gap-4">
@@ -2385,7 +2752,7 @@ export default function EditorPage() {
                   </div>
                 ) : selectedNode ? (
                   <div className="mt-4 space-y-4">
-	                    <div className="space-y-1.5">
+                    <div className="space-y-1.5">
                       <label htmlFor="node-id" className="text-sm font-medium">Node ID (nodeId)</label>
                       <div className="flex gap-2">
                         <input
@@ -2408,6 +2775,63 @@ export default function EditorPage() {
                         </button>
                       </div>
                       <p className="text-xs text-zinc-500">Used for exporting `steps/&lt;nodeId&gt;.md`.</p>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-zinc-900">AI (Step)</h3>
+                        <span className="text-xs text-zinc-400">
+                          {aiStatus === "loading" ? "Generating…" : aiStatus === "applying" ? "Applying…" : null}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Generate or refine the selected step (and optionally propose `assets/` files). Preview → Apply.
+                      </p>
+
+                      <div className="mt-3 space-y-2">
+                        <label className="text-xs font-medium text-zinc-700" htmlFor="ai-step-prompt">
+                          Prompt <span className="text-zinc-400">(required for Generate)</span>
+                        </label>
+                        <textarea
+                          id="ai-step-prompt"
+                          value={aiPromptDraft}
+                          onChange={(e) => {
+                            setAiPromptDraft(e.target.value);
+                            if (aiError) setAiError(null);
+                          }}
+                          placeholder="e.g. Create a compliance check step using the travel policy and output a JSON report to artifacts/reports/..."
+                          className="min-h-20 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+                          disabled={aiStatus !== "idle"}
+                        />
+
+                        {aiError ? (
+                          <div
+                            role="alert"
+                            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"
+                          >
+                            {aiError}
+                          </div>
+                        ) : null}
+
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void requestAiStepDraft("create")}
+                            disabled={aiStatus !== "idle" || !aiPromptDraft.trim()}
+                            className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Generate
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void requestAiStepDraft("optimize")}
+                            disabled={aiStatus !== "idle"}
+                            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Optimize
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     {(selectedNode.type === "step" || selectedNode.type === "decision" || selectedNode.type === "merge" || selectedNode.type === "end" || selectedNode.type === "subworkflow") ? (
@@ -2532,5 +2956,6 @@ export default function EditorPage() {
         </div>
       </div>
     </main>
+    </>
   );
 }
