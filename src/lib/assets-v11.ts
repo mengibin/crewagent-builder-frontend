@@ -46,7 +46,7 @@ export function parseAssetsJson(raw: string): AssetsJsonParseResult {
 }
 
 const ASSET_PATH_PATTERN = /^[A-Za-z0-9._/-]+$/;
-const ALLOWED_ASSET_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml"]);
+const ALLOWED_ASSET_EXTENSIONS = new Set([".md", ".txt", ".json", ".yaml", ".yml", ".py"]);
 
 export function normalizeAssetsPath(input: string): { value: string | null; error: string | null } {
   const raw = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");

@@ -4,6 +4,7 @@ export type ApiError = {
   code: string;
   message: string;
   details?: unknown | null;
+  hints?: string[];
 };
 
 export type ApiResponse<T> = {
@@ -38,7 +39,27 @@ function getAuthHeader(): Record<string, string> {
 
 type RequestOptions = {
   auth?: boolean;
+  timeoutMs?: number;
+  cache?: RequestCache;
 };
+
+function parseDetailError(value: unknown): ApiError | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const payload = value as { detail?: unknown };
+  if (!payload.detail || typeof payload.detail !== "object" || Array.isArray(payload.detail)) return null;
+  const detail = payload.detail as { code?: unknown; message?: unknown; details?: unknown; hints?: unknown };
+  const code = typeof detail.code === "string" && detail.code.trim() ? detail.code.trim() : "API_ERROR";
+  const message = typeof detail.message === "string" && detail.message.trim() ? detail.message : "Request failed.";
+  const hints = Array.isArray(detail.hints)
+    ? detail.hints.map((hint) => (typeof hint === "string" ? hint.trim() : "")).filter(Boolean)
+    : [];
+  return {
+    code,
+    message,
+    ...(detail.details !== undefined ? { details: detail.details } : {}),
+    ...(hints.length ? { hints } : {}),
+  };
+}
 
 async function requestJson<T>(
   method: "GET" | "POST" | "PUT" | "DELETE",
@@ -57,15 +78,30 @@ async function requestJson<T>(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (options?.auth) Object.assign(headers, getAuthHeader());
 
+  const timeoutMs = Number.isFinite(options?.timeoutMs) ? Math.max(1, Math.floor(options?.timeoutMs as number)) : null;
+  const abortController = timeoutMs ? new AbortController() : null;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  if (abortController && timeoutMs) {
+    timeoutId = setTimeout(() => {
+      abortController.abort();
+    }, timeoutMs);
+  }
+
   try {
     const res = await fetch(`${baseUrl}${path}`, {
       method,
       headers,
       body: method === "GET" ? undefined : body == null ? undefined : JSON.stringify(body),
+      cache: method === "GET" ? (options?.cache ?? "no-store") : undefined,
+      signal: abortController?.signal,
     });
 
     const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
     if (!json || typeof json !== "object" || !("data" in json) || !("error" in json)) {
+      const detailError = parseDetailError(json);
+      if (detailError) {
+        return { data: null, error: detailError };
+      }
       return {
         data: null,
         error: { code: "BAD_RESPONSE", message: "Unexpected server response." },
@@ -73,8 +109,16 @@ async function requestJson<T>(
     }
 
     return json;
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return {
+        data: null,
+        error: { code: "REQUEST_TIMEOUT", message: "Request timed out. Please try again later." },
+      };
+    }
     return { data: null, error: { code: "NETWORK_ERROR", message: "Network error. Please try again later." } };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
@@ -140,17 +184,9 @@ export async function postFormData<T>(
 
     const json = (await res.json().catch(() => null)) as ApiResponse<T> | null;
     if (!json || typeof json !== "object" || !("data" in json) || !("error" in json)) {
-      // Handle non-standard error responses (like 400/413 with detail field)
-      const errorDetail = json as unknown as { detail?: { code?: string; message?: string; details?: unknown[] } };
-      if (errorDetail?.detail) {
-        return {
-          data: null,
-          error: {
-            code: errorDetail.detail.code ?? "API_ERROR",
-            message: errorDetail.detail.message ?? "Request failed.",
-            details: errorDetail.detail.details as Record<string, string> | null | undefined,
-          },
-        };
+      const detailError = parseDetailError(json);
+      if (detailError) {
+        return { data: null, error: detailError };
       }
       return {
         data: null,

@@ -1,11 +1,22 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import Editor from "react-simple-code-editor";
+import Prism from "prismjs";
+import YAML from "yaml";
+import "prismjs/components/prism-json";
+import "prismjs/components/prism-markdown";
+import "prismjs/components/prism-python";
+import "prismjs/components/prism-yaml";
 
 import { clearAccessToken } from "@/lib/auth";
+import { AppActionDialog, type AppActionDialogTone } from "@/components/AppActionDialog";
 import { MarkdownEditorModal } from "@/components/MarkdownEditorModal";
+import { MarkdownPreview } from "@/components/MarkdownPreview";
+import { buildAiWorkbenchUrl } from "@/lib/ai-workbench-client";
 import {
   buildAgentsManifestV11,
   formatAgentsManifestV11,
@@ -16,7 +27,7 @@ import {
 } from "@/lib/agents-manifest-v11";
 import { mergeMenuItemFromDraft, splitMenuItemForDraft } from "@/lib/agent-menu-v11";
 import { deleteJson, deleteJsonWithBody, getApiBaseUrl, getJson, postJson, putJson, type ApiError } from "@/lib/api-client";
-import { normalizeAssetsPath, parseAssetsJson, toRuntimeAssetPath } from "@/lib/assets-v11";
+import { normalizeAssetsPath, parseAssetsJson } from "@/lib/assets-v11";
 import { buildBmadManifestV11, formatBmadManifestV11 } from "@/lib/bmad-manifest-v11";
 import { buildBmadExportFilesV11, buildZipBytesFromFiles } from "@/lib/bmad-zip-v11";
 import { validateExportBundleV11, type ExportValidationIssue } from "@/lib/export/validate-export-bundle-v11";
@@ -62,6 +73,28 @@ type WorkflowDetail = {
   workflowMd: string;
   graphJson: string;
   stepFilesJson: string;
+};
+
+type BuilderDialogState =
+  | {
+    kind: "confirm";
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    tone?: AppActionDialogTone;
+    resolve: (confirmed: boolean) => void;
+  }
+  | {
+    kind: "alert";
+    title: string;
+    message: string;
+  };
+
+type AssetTreeNode = {
+  name: string;
+  path: string;
+  type: "folder" | "file";
+  children: AssetTreeNode[];
 };
 
 const EMPTY_WORKFLOWS: WorkflowListItem[] = [];
@@ -128,6 +161,154 @@ type AgentMarkdownModalState =
   | { type: "userPromptTemplate" };
 
 type AgentEditorSectionKey = "metadata" | "persona" | "critical" | "prompts" | "menu" | "tools" | "advanced";
+type AssetModalMode = "edit" | "new-file" | "new-folder";
+
+const ASSET_FOLDER_MARKER_FILE = ".folder.txt";
+
+function normalizeFolderPath(input: string): string {
+  const raw = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+  if (!raw) return "assets";
+  if (raw === "assets") return "assets";
+  return raw.startsWith("assets/") ? raw : `assets/${raw.replace(/^\/+/, "")}`;
+}
+
+function isFolderMarkerPath(path: string): boolean {
+  const normalized = path.trim().replace(/\\/g, "/");
+  return normalized.startsWith("assets/") && normalized.endsWith(`/${ASSET_FOLDER_MARKER_FILE}`);
+}
+
+function folderPathFromMarkerPath(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/");
+  if (!isFolderMarkerPath(normalized)) return normalizeFolderPath(normalized);
+  return normalized.slice(0, -(`/${ASSET_FOLDER_MARKER_FILE}`.length));
+}
+
+function folderMarkerPath(folderPath: string): string {
+  return `${normalizeFolderPath(folderPath)}/${ASSET_FOLDER_MARKER_FILE}`;
+}
+
+function getAssetParentPath(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  if (idx <= 0) return "assets";
+  return normalizeFolderPath(normalized.slice(0, idx));
+}
+
+function getAssetLeafName(path: string): string {
+  const normalized = path.trim().replace(/\\/g, "/");
+  const idx = normalized.lastIndexOf("/");
+  if (idx < 0) return normalized;
+  return normalized.slice(idx + 1);
+}
+
+function joinAssetPath(parentPath: string, leafName: string): string {
+  const parent = normalizeFolderPath(parentPath);
+  return `${parent}/${leafName.trim().replace(/^\/+/, "")}`;
+}
+
+function getAssetExtension(path: string): string {
+  const name = getAssetLeafName(path);
+  const idx = name.lastIndexOf(".");
+  if (idx < 0) return "";
+  return name.slice(idx).toLowerCase();
+}
+
+type AssetCodeLanguage = "json" | "python" | "yaml" | "markdown" | "plain";
+
+function getAssetCodeLanguage(path: string): AssetCodeLanguage {
+  const ext = getAssetExtension(path);
+  if (ext === ".json") return "json";
+  if (ext === ".py") return "python";
+  if (ext === ".yml" || ext === ".yaml") return "yaml";
+  if (ext === ".md") return "markdown";
+  return "plain";
+}
+
+function getAssetCodeLanguageLabel(path: string): string {
+  const language = getAssetCodeLanguage(path);
+  if (language === "json") return "JSON";
+  if (language === "python") return "Python";
+  if (language === "yaml") return "YAML";
+  if (language === "markdown") return "Markdown";
+  return "Text";
+}
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function highlightAssetCode(path: string, code: string): string {
+  const language = getAssetCodeLanguage(path);
+  if (language === "plain") return escapeHtml(code);
+  const grammar = Prism.languages[language];
+  if (!grammar) return escapeHtml(code);
+  try {
+    return Prism.highlight(code, grammar, language);
+  } catch {
+    return escapeHtml(code);
+  }
+}
+
+function renderAssetPreview(path: string, content: string): ReactNode {
+  const ext = getAssetExtension(path);
+
+  if (ext === ".md") {
+    return <MarkdownPreview markdown={content} emptyText="(empty markdown)" />;
+  }
+
+  if (ext === ".json") {
+    try {
+      const value = content.trim() ? JSON.parse(content) : {};
+      return (
+        <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      );
+    } catch {
+      return (
+        <div className="space-y-2">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            Invalid JSON: preview shows raw text.
+          </div>
+          <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">{content}</pre>
+        </div>
+      );
+    }
+  }
+
+  if (ext === ".yml" || ext === ".yaml") {
+    try {
+      const value = content.trim() ? YAML.parse(content) : {};
+      return (
+        <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      );
+    } catch {
+      return (
+        <div className="space-y-2">
+          <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            Invalid YAML: preview shows raw text.
+          </div>
+          <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">{content}</pre>
+        </div>
+      );
+    }
+  }
+
+  if (ext === ".py") {
+    return <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">{content}</pre>;
+  }
+
+  if (ext === ".txt") {
+    return <pre className="whitespace-pre-wrap break-words rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs leading-6 text-zinc-900">{content}</pre>;
+  }
+
+  return <pre className="overflow-auto rounded-xl bg-zinc-950 p-3 font-mono text-xs leading-6 text-zinc-50">{content}</pre>;
+}
 
 function newDraftKey(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -236,6 +417,59 @@ function triggerBrowserDownload(params: { bytes: Uint8Array; filename: string })
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildAssetsTree(list: { path: string }[], explicitFolders: string[] = []): AssetTreeNode[] {
+  type BuildNode = { node: AssetTreeNode; children: Map<string, BuildNode> };
+  const root = new Map<string, BuildNode>();
+  const upsertPath = (path: string, leafType: "file" | "folder") => {
+    const rawPath = path.startsWith("assets/") ? path.slice("assets/".length) : path;
+    const parts = rawPath.split("/").filter(Boolean);
+    if (!parts.length) return;
+    let currentMap = root;
+    let currentPath = "assets";
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      const isLeaf = i === parts.length - 1;
+      currentPath = `${currentPath}/${part}`;
+      let buildNode = currentMap.get(part);
+      const nextType: "file" | "folder" = isLeaf ? leafType : "folder";
+      if (!buildNode) {
+        buildNode = {
+          node: { name: part, path: currentPath, type: nextType, children: [] },
+          children: new Map(),
+        };
+        currentMap.set(part, buildNode);
+      } else if (nextType === "folder" && buildNode.node.type !== "folder") {
+        buildNode.node.type = "folder";
+      }
+      if (!isLeaf) currentMap = buildNode.children;
+    }
+  };
+
+  for (const asset of list) {
+    upsertPath(asset.path, "file");
+  }
+  for (const folder of explicitFolders) {
+    upsertPath(folder, "folder");
+  }
+
+  const toNode = (buildNode: BuildNode): AssetTreeNode => ({
+    ...buildNode.node,
+    children: Array.from(buildNode.children.values()).map(toNode),
+  });
+
+  const sortNodes = (nodes: AssetTreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    nodes.forEach((node) => sortNodes(node.children));
+  };
+
+  const rootNodes = Array.from(root.values()).map(toNode);
+  sortNodes(rootNodes);
+  return rootNodes;
 }
 
 function IssuesAlert(props: { variant: "error" | "warning"; title: string; items: string[] }) {
@@ -754,10 +988,17 @@ function normalizeArtifactsDir(input: string): { value: string | null; error: st
 export default function ProjectBuilderPage() {
   const router = useRouter();
   const params = useParams<{ projectId: string }>();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const ready = useRequireAuth();
   const { error: apiEnvError } = getApiBaseUrl();
 
   const projectId = params?.projectId;
+  const searchQuery = searchParams.toString();
+  const returnTo = useMemo(() => {
+    if (!pathname) return "";
+    return searchQuery ? `${pathname}?${searchQuery}` : pathname;
+  }, [pathname, searchQuery]);
 
   const [data, setData] = useState<PackageDetail | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -803,12 +1044,15 @@ export default function ProjectBuilderPage() {
   const [assetsJsonRaw, setAssetsJsonRaw] = useState("{}");
   const [assetsError, setAssetsError] = useState<string | null>(null);
   const [assetModalOpen, setAssetModalOpen] = useState(false);
+  const [assetModalMode, setAssetModalMode] = useState<AssetModalMode>("new-file");
   const [assetEditingPath, setAssetEditingPath] = useState<string | null>(null);
-  const [assetPathDraft, setAssetPathDraft] = useState("");
+  const [assetParentPath, setAssetParentPath] = useState("assets");
+  const [assetNameDraft, setAssetNameDraft] = useState("");
   const [assetContentDraft, setAssetContentDraft] = useState("");
   const [assetFormError, setAssetFormError] = useState<string | null>(null);
   const [assetSaving, setAssetSaving] = useState(false);
   const [assetDeletingPath, setAssetDeletingPath] = useState<string | null>(null);
+  const [dialogState, setDialogState] = useState<BuilderDialogState | null>(null);
 
   useEffect(() => {
     if (!ready) return;
@@ -902,7 +1146,45 @@ export default function ProjectBuilderPage() {
   const assetsParsed = useMemo(() => parseAssetsJson(assetsJsonRaw), [assetsJsonRaw]);
   const assetsList = assetsParsed.assets;
   const assetsMap = assetsParsed.map;
+  const visibleAssetsList = useMemo(
+    () => assetsList.filter((asset) => !isFolderMarkerPath(asset.path)),
+    [assetsList],
+  );
+  const visibleAssetsMap = useMemo(() => {
+    const next: Record<string, string> = {};
+    for (const [path, content] of Object.entries(assetsMap)) {
+      if (isFolderMarkerPath(path)) continue;
+      next[path] = content;
+    }
+    return next;
+  }, [assetsMap]);
+  const explicitFolderPaths = useMemo(
+    () => Object.keys(assetsMap).filter(isFolderMarkerPath).map(folderPathFromMarkerPath),
+    [assetsMap],
+  );
   const assetsParseError = assetsParsed.error;
+  const assetsTree = useMemo(() => buildAssetsTree(visibleAssetsList, explicitFolderPaths), [visibleAssetsList, explicitFolderPaths]);
+  const [collapsedAssetPaths, setCollapsedAssetPaths] = useState<Record<string, boolean>>({});
+  const [selectedAssetFolderPath, setSelectedAssetFolderPath] = useState("assets");
+
+  useEffect(() => {
+    if (selectedAssetFolderPath === "assets") return;
+    const stillExists =
+      explicitFolderPaths.includes(selectedAssetFolderPath) ||
+      Object.keys(visibleAssetsMap).some((p) => p.startsWith(`${selectedAssetFolderPath}/`));
+    if (!stillExists) setSelectedAssetFolderPath("assets");
+  }, [explicitFolderPaths, selectedAssetFolderPath, visibleAssetsMap]);
+
+  const [readmeDraft, setReadmeDraft] = useState("");
+  const [readmeModalOpen, setReadmeModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!activeData?.workflowMd) {
+      setReadmeDraft("");
+      return;
+    }
+    setReadmeDraft(activeData.workflowMd);
+  }, [activeData?.workflowMd, projectId]);
 
   const bmadCreatedAt = useMemo(() => new Date().toISOString(), []);
   const bmadBuild = useMemo(() => {
@@ -984,31 +1266,54 @@ export default function ProjectBuilderPage() {
   }
 
   function openCreateAgent(): void {
-    if (agentsError) {
-      setAgentFormError(`${agentsError} (Fix agentsJson before creating/editing.)`);
-      return;
-    }
-    resetAgentForm();
-    setAgentModalOpen(true);
+    if (!projectId) return;
+    router.push(`/builder/${projectId}/agents/new`);
   }
 
   function openEditAgent(agentId: string): void {
-    if (agentsError) return;
-    const agent = agentsManifest.agents.find((a) => a.id === agentId);
-    if (!agent) return;
-    setAgentEditingId(agentId);
-    setAgentDraft(createAgentDraftFromAgent(agent));
-    setAgentFormError(null);
-    setAgentEditorExpanded({
-      metadata: true,
-      persona: true,
-      critical: false,
-      prompts: false,
-      menu: false,
-      tools: false,
-      advanced: false,
+    if (!projectId) return;
+    router.push(`/builder/${projectId}/agents/${encodeURIComponent(agentId)}`);
+  }
+
+  function openAiWorkbench(targetType: "workflow" | "agent" | "asset", targetId: string, mode: "create" | "optimize" = "optimize"): void {
+    if (!projectId) return;
+    const normalizedTargetId = `${targetId ?? ""}`.trim();
+    if (!normalizedTargetId) return;
+    const parsedWorkflowId = targetType === "workflow" ? Number.parseInt(normalizedTargetId, 10) : NaN;
+    const workflowId = Number.isFinite(parsedWorkflowId) && parsedWorkflowId > 0 ? parsedWorkflowId : null;
+    router.push(
+      buildAiWorkbenchUrl({
+        projectId,
+        targetType,
+        targetId: normalizedTargetId,
+        mode,
+        workflowId,
+        source: "builder",
+        returnTo,
+      }),
+    );
+  }
+
+  function showDialogAlert(message: string, title = "Notice"): void {
+    setDialogState({ kind: "alert", title, message });
+  }
+
+  function showDialogConfirm(options: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    tone?: AppActionDialogTone;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      setDialogState({
+        kind: "confirm",
+        title: options.title,
+        message: options.message,
+        confirmLabel: options.confirmLabel,
+        tone: options.tone,
+        resolve,
+      });
     });
-    setAgentModalOpen(true);
   }
 
   async function deleteAgent(agentId: string): Promise<void> {
@@ -1060,7 +1365,13 @@ export default function ProjectBuilderPage() {
 
     const target = agentsManifest.agents.find((a) => a.id === agentId);
     const title = target?.metadata?.title || target?.metadata?.name || agentId;
-    if (!window.confirm(`Delete Agent "${title}" (id: ${agentId})?`)) {
+    const confirmed = await showDialogConfirm({
+      title: "Delete agent",
+      message: `Delete Agent "${title}" (id: ${agentId})?`,
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!confirmed) {
       setAgentDeletingId(null);
       return;
     }
@@ -1295,7 +1606,7 @@ export default function ProjectBuilderPage() {
     if (!projectId) return;
     if (workflowDeletingId) return;
     if (activeWorkflows.length <= 1) {
-      window.alert("You must keep at least 1 workflow.");
+      showDialogAlert("You must keep at least 1 workflow.", "Delete workflow blocked");
       return;
     }
 
@@ -1327,13 +1638,22 @@ export default function ProjectBuilderPage() {
         .slice(0, 3)
         .map((r) => `${r.workflowName} (ID:${r.workflowId}) referenced ${r.count} time(s)`)
         .join("; ");
-      window.alert(`This workflow is referenced by subworkflow nodes: ${summary}. Remove the references before deleting.`);
+      showDialogAlert(
+        `This workflow is referenced by subworkflow nodes: ${summary}. Remove the references before deleting.`,
+        "Delete workflow blocked",
+      );
       setWorkflowDeletingId(null);
       return;
     }
 
     const label = workflow.isDefault ? `${workflow.name} (default)` : workflow.name;
-    if (!window.confirm(`Delete workflow "${label}" (ID: ${workflow.id})?`)) {
+    const confirmed = await showDialogConfirm({
+      title: "Delete workflow",
+      message: `Delete workflow "${label}" (ID: ${workflow.id})?`,
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!confirmed) {
       setWorkflowDeletingId(null);
       return;
     }
@@ -1341,7 +1661,7 @@ export default function ProjectBuilderPage() {
     setWorkflowDeletingId(null);
 
     if (res.error) {
-      window.alert(res.error.message ?? "Delete failed. Please try again.");
+      showDialogAlert(res.error.message ?? "Delete failed. Please try again.", "Delete workflow failed");
       return;
     }
 
@@ -1436,24 +1756,73 @@ export default function ProjectBuilderPage() {
 
   function resetAssetForm(): void {
     setAssetEditingPath(null);
-    setAssetPathDraft("");
+    setAssetModalMode("new-file");
+    setAssetParentPath("assets");
+    setAssetNameDraft("");
     setAssetContentDraft("");
     setAssetFormError(null);
   }
 
-  function openCreateAsset(): void {
+  function closeAssetModal(): void {
+    if (assetSaving) return;
+    setAssetModalOpen(false);
     resetAssetForm();
+  }
+
+  function openCreateAsset(parentPath = "assets", mode: "new-file" | "new-folder" = "new-file"): void {
+    resetAssetForm();
+    setAssetModalMode(mode);
+    setAssetParentPath(normalizeFolderPath(parentPath));
+    setAssetNameDraft("");
+    setAssetContentDraft("");
     setAssetModalOpen(true);
   }
 
   function openEditAsset(path: string): void {
-    const content = assetsMap[path];
+    const content = visibleAssetsMap[path];
     if (typeof content !== "string") return;
+    resetAssetForm();
+    setAssetModalMode("edit");
     setAssetEditingPath(path);
-    setAssetPathDraft(path);
+    setAssetParentPath(getAssetParentPath(path));
+    setAssetNameDraft(getAssetLeafName(path));
     setAssetContentDraft(content);
     setAssetFormError(null);
     setAssetModalOpen(true);
+  }
+
+  function resolveAssetCreateTarget(): { path: string | null; folderPath: string | null; error: string | null } {
+    const leafName = assetNameDraft.trim().replace(/\\/g, "/");
+    if (!leafName) return { path: null, folderPath: null, error: "Name is required." };
+    if (leafName.includes("/")) {
+      return { path: null, folderPath: null, error: "Name must be a single segment (do not include '/')." };
+    }
+
+    if (assetModalMode === "new-folder") {
+      const folderPath = normalizeFolderPath(joinAssetPath(assetParentPath, leafName));
+      const markerPath = folderMarkerPath(folderPath);
+      const normalized = normalizeAssetsPath(markerPath);
+      if (normalized.error || !normalized.value) {
+        return { path: null, folderPath: null, error: normalized.error ?? "Invalid folder path." };
+      }
+      const folderExists =
+        explicitFolderPaths.includes(folderPath) ||
+        Object.keys(visibleAssetsMap).some((p) => p.startsWith(`${folderPath}/`));
+      if (folderExists) {
+        return { path: null, folderPath: null, error: "Folder already exists." };
+      }
+      return { path: normalized.value, folderPath, error: null };
+    }
+
+    const fullPath = joinAssetPath(assetParentPath, leafName);
+    const normalized = normalizeAssetsPath(fullPath);
+    if (normalized.error || !normalized.value) {
+      return { path: null, folderPath: null, error: normalized.error ?? "Invalid file path." };
+    }
+    if (assetsMap[normalized.value]) {
+      return { path: null, folderPath: null, error: "File already exists in this folder." };
+    }
+    return { path: normalized.value, folderPath: getAssetParentPath(normalized.value), error: null };
   }
 
   async function saveAsset(): Promise<void> {
@@ -1464,24 +1833,27 @@ export default function ProjectBuilderPage() {
     if (!projectId) return;
     if (assetSaving) return;
 
-    const normalized = normalizeAssetsPath(assetPathDraft);
-    if (normalized.error || !normalized.value) {
-      setAssetFormError(normalized.error ?? "Invalid path.");
+    let path = assetEditingPath;
+    let createdFolderPath: string | null = null;
+    if (assetModalMode !== "edit") {
+      const resolved = resolveAssetCreateTarget();
+      if (resolved.error || !resolved.path) {
+        setAssetFormError(resolved.error ?? "Invalid path.");
+        return;
+      }
+      path = resolved.path;
+      createdFolderPath = resolved.folderPath;
+    }
+    if (!path) {
+      setAssetFormError("Asset path is missing.");
       return;
     }
-
-    const path = assetEditingPath ?? normalized.value;
-    if (!assetEditingPath && assetsMap[path]) {
-      setAssetFormError("Path already exists. Rename it or use Edit.");
-      return;
-    }
-
-    const content = assetContentDraft ?? "";
+    const content = assetModalMode === "new-folder" ? "" : assetContentDraft ?? "";
 
     setAssetSaving(true);
     setAssetFormError(null);
 
-    const res = assetEditingPath
+    const res = assetModalMode === "edit"
       ? await putJson<PackageAssetsOut>(`/packages/${projectId}/assets`, { path, content }, { auth: true })
       : await postJson<PackageAssetsOut>(`/packages/${projectId}/assets`, { path, content }, { auth: true });
 
@@ -1494,8 +1866,14 @@ export default function ProjectBuilderPage() {
 
     setAssetsJsonRaw(res.data.assetsJson || "{}");
     setAssetsError(null);
-    setAssetModalOpen(false);
-    resetAssetForm();
+    if (createdFolderPath) {
+      setCollapsedAssetPaths((prev) => ({
+        ...prev,
+        [assetParentPath]: false,
+        [createdFolderPath]: false,
+      }));
+    }
+    closeAssetModal();
   }
 
   async function deleteAsset(path: string): Promise<void> {
@@ -1503,14 +1881,20 @@ export default function ProjectBuilderPage() {
     if (!projectId) return;
     if (assetDeletingPath) return;
 
-    if (!window.confirm(`Delete asset "${path}"?`)) return;
+    const confirmed = await showDialogConfirm({
+      title: "Delete asset",
+      message: `Delete asset "${path}"?`,
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!confirmed) return;
 
     setAssetDeletingPath(path);
     const res = await deleteJsonWithBody<PackageAssetsOut>(`/packages/${projectId}/assets`, { path }, { auth: true });
     setAssetDeletingPath(null);
 
     if (res.error || !res.data) {
-      window.alert(res.error?.message ?? "Delete failed. Please try again.");
+      showDialogAlert(res.error?.message ?? "Delete failed. Please try again.", "Delete asset failed");
       return;
     }
 
@@ -1819,7 +2203,7 @@ export default function ProjectBuilderPage() {
         bmadJson: bmadJsonPreview,
         agentsJson: agentsJsonPreview,
         workflows: workflowDetails,
-        ...(Object.keys(assetsMap).length ? { assets: assetsMap } : {}),
+        ...(Object.keys(visibleAssetsMap).length ? { assets: visibleAssetsMap } : {}),
       });
 
       if (!exportFiles.filesByPath) {
@@ -1855,59 +2239,175 @@ export default function ProjectBuilderPage() {
     );
   }
 
-  return (
-    <main className="min-h-screen bg-zinc-50 text-zinc-950">
-      <div className="w-full max-w-none px-6 py-10">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">ProjectBuilder</h1>
-            <p className="mt-2 text-sm text-zinc-600">
-              {activeData ? (
-                <>
-                  {activeData.name} <span className="text-zinc-400">·</span> ID: {activeData.id}
-                </>
-              ) : projectId ? (
-                <>Project ID: {projectId}</>
+  const pineconeTitle = activeData?.name ?? "Pinecone";
+  const isAssetCollapsed = (path: string): boolean => Boolean(collapsedAssetPaths[path]);
+  const toggleAssetCollapse = (path: string): void => {
+    setCollapsedAssetPaths((prev) => ({ ...prev, [path]: !prev[path] }));
+  };
+  const renderAssetsNodes = (nodes: AssetTreeNode[]): ReactNode =>
+    nodes.map((node) => {
+      const isFolder = node.type === "folder";
+      const normalizedPath = normalizeFolderPath(node.path);
+      const collapsed = isFolder ? isAssetCollapsed(normalizedPath) : false;
+      const isFolderSelected = isFolder && selectedAssetFolderPath === normalizedPath;
+      const fullPath = node.path.startsWith("assets/") ? node.path : `assets/${node.path}`;
+      return (
+        <div key={node.path} className="space-y-2">
+          <div
+            onClick={() => {
+              if (isFolder) {
+                setSelectedAssetFolderPath(normalizedPath);
+                return;
+              }
+              openEditAsset(fullPath);
+            }}
+            className={`flex min-w-max cursor-pointer items-center justify-between rounded-2xl border px-3 py-2 transition-colors ${
+              isFolderSelected ? "border-[#9CB8FF] bg-[#ECF2FF]" : "border-[#DDE3EE] bg-white"
+            }`}
+          >
+            {isFolder ? (
+              <div className="flex min-w-max items-center gap-2">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleAssetCollapse(normalizedPath);
+                  }}
+                  className="flex h-6 w-6 items-center justify-center rounded-full text-[#94A0B8] hover:bg-[#E9EDFF]"
+                  aria-label={collapsed ? `Expand ${node.name}` : `Collapse ${node.name}`}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    className={`h-3 w-3 transition-transform ${collapsed ? "-rotate-90" : "rotate-0"}`}
+                  >
+                    <path
+                      d="M7 10l5 5 5-5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+                <div className="flex min-w-max items-center gap-2 text-left">
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-[#4F46E5]">
+                    <path
+                      d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span className="whitespace-nowrap text-xs font-semibold text-[#1F2937]">{node.name}/</span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex min-w-max items-center gap-2 text-left">
+                <svg
+                  viewBox="0 0 24 24"
+                  className="h-3.5 w-3.5 text-[#94A0B8]"
+                >
+                  <path
+                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="whitespace-nowrap text-xs font-semibold text-[#1F2937]">{node.name}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1.5">
+              {isFolder ? (
+                isFolderSelected ? (
+                  <span className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2 py-0.5 text-[10px] font-semibold text-[#4F46E5]">
+                    Target
+                  </span>
+                ) : null
               ) : (
-                "Loading..."
+                <>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openAiWorkbench("asset", fullPath, "create");
+                    }}
+                    disabled={!projectId}
+                    className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2 py-0.5 text-[10px] font-semibold text-[#4F46E5] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    AI workbench
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void deleteAsset(fullPath);
+                    }}
+                    className="text-[#C23B3B] disabled:opacity-40"
+                    aria-label={`Delete ${node.name}`}
+                  >
+                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5">
+                      <path
+                        d="M3 6h18M8 6V4h8v2m-9 0l1 14h8l1-14"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </button>
+                </>
               )}
-            </p>
+            </div>
           </div>
+          {isFolder && !collapsed && node.children.length ? (
+            <div className="ml-3 border-l border-[#DDE3EE] pl-3">
+              <div className="space-y-2">{renderAssetsNodes(node.children)}</div>
+            </div>
+          ) : null}
+        </div>
+      );
+    });
 
-          <div className="flex flex-wrap items-center gap-4">
+  return (
+    <main className="min-h-screen bg-[#EEF2F8] text-[#1F2937]">
+      <div className="mx-auto w-full px-8 py-10 lg:px-12">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-[#DDE3EE] bg-white p-1">
+              <Image src="/favicon.png" alt="CrewAgent icon" width={32} height={32} className="h-full w-full object-contain" />
+            </div>
+            <p className="text-sm font-semibold">CrewAgent Builder</p>
+          </div>
+          <div className="flex items-center gap-3 text-xs font-semibold">
+            <Link href="/dashboard" className="text-[#4F46E5]">
+              ← Dashboard
+            </Link>
             <button
               type="button"
-              onClick={() => void exportPackageV11()}
-              disabled={
-                exporting ||
-                isLoading ||
-                Boolean(activeError) ||
-                Boolean(activeWorkflowsError) ||
-                Boolean(assetsError) ||
-                Boolean(assetsParseError) ||
-                Boolean(apiEnvError) ||
-                !bmadBuild.manifest ||
-                !agentsExportBuild.manifest
-              }
-              className="rounded-lg bg-zinc-950 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => router.push("/profile")}
+              className="flex items-center gap-2 text-[#1F2937]"
             >
-              {exporting ? "Exporting..." : "Export Package (v1.1)"}
+              <span className="flex h-7 w-7 items-center justify-center rounded-full border border-[#C7D2FE] bg-[#E9EDFF]">
+                <span className="h-2.5 w-2.5 rounded-full bg-[#4F46E5]" />
+              </span>
+              Cora Lin
             </button>
-            <Link
-              href="/dashboard"
-              className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-            >
-              Back to Dashboard
-            </Link>
             <button
               type="button"
               onClick={() => {
                 clearAccessToken();
                 router.replace("/login");
               }}
-              className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
+              className="text-[#5F6B82]"
             >
-              Sign out
+              Logout
             </button>
           </div>
         </header>
@@ -1935,515 +2435,386 @@ export default function ProjectBuilderPage() {
         ) : null}
 
         {apiEnvError ? (
-          <div role="alert" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <div
+            role="alert"
+            className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+          >
             {apiEnvError}
           </div>
         ) : null}
 
-        <div className="mt-8 grid grid-cols-12 gap-6">
-          <section className="col-span-12 rounded-2xl border border-zinc-200 bg-white p-4 md:col-span-3">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-zinc-900">Workflows</h2>
-              <div className="flex items-center gap-3">
+        <section className="mt-8">
+          <span className="inline-flex rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-3 py-1 text-xs font-semibold text-[#4F46E5]">
+            Pinecone
+          </span>
+          <h1 className="mt-3 text-3xl font-semibold leading-tight">{pineconeTitle}</h1>
+          <p className="mt-2 text-sm text-[#5F6B82]">Last updated 2 days ago · Owner: Cora Lin</p>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => void exportPackageV11()}
+              disabled={
+                exporting ||
+                isLoading ||
+                Boolean(activeError) ||
+                Boolean(activeWorkflowsError) ||
+                Boolean(assetsError) ||
+                Boolean(assetsParseError) ||
+                Boolean(apiEnvError) ||
+                !bmadBuild.manifest ||
+                !agentsExportBuild.manifest
+              }
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-4 py-2 text-xs font-semibold text-[#4F46E5] shadow-[0_6px_16px_rgba(79,70,229,0.12)] transition-colors hover:bg-[#DFE6FF] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 3v11" />
+                <path d="m8 10 4 4 4-4" />
+                <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+              </svg>
+              <span>{exporting ? "Exporting..." : "Export Pinecone"}</span>
+            </button>
+          </div>
+        </section>
+
+        <div className="mt-8 grid gap-4 lg:grid-cols-3 lg:items-stretch">
+          <section className="flex h-[560px] min-h-0 flex-col overflow-hidden rounded-[24px] border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-[#4F46E5]">
+                  <path
+                    d="M6 3v6a3 3 0 0 0 3 3h6M6 21v-6a3 3 0 0 1 3-3h6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <h2 className="text-sm font-semibold">Workflows</h2>
+              </div>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={openCreateWorkflow}
                   disabled={isLoading || Boolean(activeError) || Boolean(apiEnvError)}
-                  className="rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-3 py-1 text-xs font-semibold text-[#4F46E5] disabled:opacity-60"
                 >
                   New workflow
                 </button>
-                <span className="text-xs text-zinc-500">{isLoading ? "…" : activeWorkflows.length}</span>
+                <span className="text-[11px] font-semibold text-[#94A0B8]">{activeWorkflows.length}</span>
               </div>
             </div>
-
-            {isLoading ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Loading...</p>
-              </div>
-            ) : activeError ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Failed to load workflows.</p>
-              </div>
-            ) : activeWorkflowsError ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Failed to load workflows.</p>
-              </div>
-            ) : activeWorkflows.length === 0 ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">No workflows yet. Create one first.</p>
-              </div>
-            ) : (
-              <div className="mt-4 space-y-2">
-                {activeWorkflows.map((wf) => (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Left · All
+              </span>
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Up · Recent
+              </span>
+            </div>
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+              {isLoading ? (
+                <p className="text-xs text-[#94A0B8]">Loading...</p>
+              ) : activeError || activeWorkflowsError ? (
+                <p className="text-xs text-[#94A0B8]">Failed to load workflows.</p>
+              ) : activeWorkflows.length === 0 ? (
+                <p className="text-xs text-[#94A0B8]">No workflows yet.</p>
+              ) : (
+                activeWorkflows.map((wf) => (
                   <div
                     key={wf.id}
-                    className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-left hover:bg-zinc-50"
+                    onClick={() => router.push(`/editor/${projectId}/${wf.id}`)}
+                    className="flex cursor-pointer items-center justify-between rounded-2xl border border-[#DDE3EE] bg-white px-3 py-2"
                   >
-                    <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 text-left">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-xs font-semibold">{wf.name}</p>
+                        {wf.isDefault ? (
+                          <span className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2 py-0.5 text-[10px] font-semibold text-[#4F46E5]">
+                            Default
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-[11px] text-[#94A0B8]">Updated recently</p>
+                    </div>
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => router.push(`/editor/${projectId}/${wf.id}`)}
-                        className="min-w-0 flex-1 text-left"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openAiWorkbench("workflow", String(wf.id), "optimize");
+                        }}
+                        disabled={!projectId}
+                        className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2.5 py-1 text-[10px] font-semibold text-[#4F46E5] disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        <p className="truncate text-sm font-medium text-zinc-950">
-                          {wf.name}{" "}
-                          {wf.isDefault ? (
-                            <span className="ml-2 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700">
-                              Default
-                            </span>
-                          ) : null}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-zinc-500">ID: {wf.id}</p>
+                        AI workbench
                       </button>
-                      <div className="flex shrink-0 items-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => void deleteWorkflow(wf)}
-                          disabled={
-                            isLoading ||
-                            Boolean(activeError) ||
-                            Boolean(apiEnvError) ||
-                            workflowDeletingId === wf.id
-                          }
-                          className="text-xs font-medium text-red-700 underline underline-offset-4 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {workflowDeletingId === wf.id ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteWorkflow(wf);
+                        }}
+                        disabled={
+                          isLoading ||
+                          Boolean(activeError) ||
+                          Boolean(apiEnvError) ||
+                          workflowDeletingId === wf.id
+                        }
+                        className="text-[#C23B3B] disabled:opacity-50"
+                        aria-label={`Delete workflow ${wf.name}`}
+                      >
+                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5">
+                          <path
+                            d="M3 6h18M8 6V4h8v2m-9 0l1 14h8l1-14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="col-span-12 rounded-2xl border border-zinc-200 bg-white p-4 md:col-span-6">
-            <h2 className="text-sm font-semibold text-zinc-900">Overview</h2>
-            <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-              {isLoading ? (
-                <p className="text-sm text-zinc-600">Loading...</p>
-              ) : apiEnvError ? (
-                <p className="text-sm text-zinc-700">{apiEnvError}</p>
-              ) : activeError ? (
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm font-medium text-zinc-950">{formattedLoadError?.title}</p>
-                    <p className="mt-1 text-sm text-zinc-700">{formattedLoadError?.message}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={onRetry}
-                      className="rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800"
-                    >
-                      Retry
-                    </button>
-                    <Link
-                      href="/dashboard"
-                      className="text-xs font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-                    >
-                      Back to Dashboard
-                    </Link>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <p className="text-sm text-zinc-700">
-                    This is the ProjectBuilder shell: view the project&apos;s workflows and agents, and jump into the workflow editor.
-                  </p>
-                  <p className="mt-2 text-xs text-zinc-500">
-                    Multi-workflow create/switch (Story 3.9) and Agents v1.1 field editing (Story 3.10) are done; the
-                    Workflow Editor fullscreen / more node types / branch config / variables / artifacts (Story 3.11) is being finalized.
-                  </p>
-
-                  <details className="mt-4 rounded-xl border border-zinc-200 bg-white px-4 py-3">
-                    <summary className="cursor-pointer select-none text-xs font-medium text-zinc-900">
-                      bmad.json (preview)
-                    </summary>
-                    <div className="mt-3 space-y-3">
-                      {bmadBuild.errors.length ? (
-                        <div
-                          role="alert"
-                          className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900"
-                        >
-                          {bmadBuild.errors.join("; ")}
-                        </div>
-                      ) : null}
-
-                      {bmadBuild.warnings.length ? (
-                        <div
-                          role="alert"
-                          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                        >
-                          {bmadBuild.warnings.join("; ")}
-                        </div>
-                      ) : null}
-
-                      {!isLoading && !activeError && !activeWorkflowsError && bmadJsonPreview ? (
-                        <>
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="text-xs text-zinc-500">Used for Story 3.16 full-package export (ZIP root: bmad.json).</p>
-                            <button
-                              type="button"
-                              onClick={() => void copyBmadJson()}
-                              disabled={!bmadJsonPreview}
-                              className="shrink-0 rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {bmadCopyStatus === "copied"
-                                ? "Copied"
-                                : bmadCopyStatus === "failed"
-                                  ? "Copy failed"
-                                  : "Copy"}
-                            </button>
-                          </div>
-                          <pre className="max-h-72 overflow-auto rounded-xl border border-zinc-200 bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">
-                            {bmadJsonPreview}
-                          </pre>
-                        </>
-                      ) : bmadBuild.errors.length ? null : (
-                        <p className="text-sm text-zinc-600">
-                          {isLoading ? "Loading..." : "Nothing to preview yet (make sure you've created at least 1 workflow)."}
-                        </p>
-                      )}
-                    </div>
-                  </details>
-
-                  <details className="mt-4 rounded-xl border border-zinc-200 bg-white px-4 py-3">
-                    <summary className="cursor-pointer select-none text-xs font-medium text-zinc-900">
-                      agents.json (preview)
-                    </summary>
-                    <div className="mt-3 space-y-3">
-                      {agentsExportBuild.errors.length ? (
-                        <div
-                          role="alert"
-                          className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900"
-                        >
-                          {agentsExportBuild.errors.join("; ")}
-                        </div>
-                      ) : null}
-
-                      {agentsExportBuild.warnings.length ? (
-                        <div
-                          role="alert"
-                          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                        >
-                          {agentsExportBuild.warnings.join("; ")}
-                        </div>
-                      ) : null}
-
-                      {!isLoading && !activeError && agentsJsonPreview ? (
-                        <>
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="text-xs text-zinc-500">
-                              Used for Story 3.16 full-package export (ZIP root: agents.json).
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => void copyAgentsJson()}
-                              disabled={!agentsJsonPreview}
-                              className="shrink-0 rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {agentsCopyStatus === "copied"
-                                ? "Copied"
-                                : agentsCopyStatus === "failed"
-                                  ? "Copy failed"
-                                  : "Copy"}
-                            </button>
-                          </div>
-                          <pre className="max-h-72 overflow-auto rounded-xl border border-zinc-200 bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">
-                            {agentsJsonPreview}
-                          </pre>
-                        </>
-                      ) : agentsExportBuild.errors.length ? null : (
-                        <p className="text-sm text-zinc-600">
-                          {isLoading ? "Loading..." : "Nothing to preview yet (make sure you've created at least 1 agent)."}
-                        </p>
-                      )}
-                    </div>
-                  </details>
-                </>
+                ))
               )}
             </div>
           </section>
 
-          <section className="col-span-12 rounded-2xl border border-zinc-200 bg-white p-4 md:col-span-3">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-zinc-900">Agents</h2>
-              <div className="flex items-center gap-3">
+          <section className="flex h-[560px] min-h-0 flex-col overflow-hidden rounded-[24px] border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Agents</h2>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={openCreateAgent}
-                  disabled={isLoading || Boolean(activeError) || Boolean(apiEnvError) || Boolean(agentsError)}
-                  className="rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={Boolean(agentsError)}
+                  className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-3 py-1 text-xs font-semibold text-[#4F46E5] disabled:opacity-60"
                 >
                   New agent
                 </button>
-                <span className="text-xs text-zinc-500">{isLoading ? "…" : agents.length}</span>
+                <span className="text-[11px] font-semibold text-[#94A0B8]">{agents.length} agents</span>
               </div>
             </div>
-
-            {isLoading ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Loading...</p>
-              </div>
-            ) : activeError ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Failed to load agents.</p>
-              </div>
-            ) : (
-              <>
-                {agentsError ? (
-                  <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900"
-                  >
-                    {agentsError}
-                  </div>
-                ) : null}
-
-                {agentsActionError ? (
-                  <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                  >
-                    {agentsActionError}
-                  </div>
-                ) : null}
-
-                {agents.length === 0 && !agentsError ? (
-                  <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                    <p className="text-sm text-zinc-600">No agents yet.</p>
-                  </div>
-                ) : (
-                  <ul className="mt-4 space-y-2">
-                    {agents.map((a) => (
-                      <li key={a.id} className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-zinc-950">
-                              <span className="mr-2">{a.icon || "🧩"}</span>
-                              {a.title || a.name}
-                            </p>
-                            <p className="mt-1 truncate text-xs text-zinc-500">{a.role || "Agent"}</p>
-                            <p className="mt-1 truncate font-mono text-[11px] text-zinc-400">id: {a.id}</p>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-3">
-                            <button
-                              type="button"
-                              onClick={() => openEditAgent(a.id)}
-                              disabled={Boolean(agentsError) || agentDeletingId === a.id}
-                              className="text-xs font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void deleteAgent(a.id)}
-                              disabled={Boolean(agentsError) || agentDeletingId === a.id}
-                              className="text-xs font-medium text-red-700 underline underline-offset-4 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {agentDeletingId === a.id ? "Deleting..." : "Delete"}
-                            </button>
-                          </div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </>
-            )}
-          </section>
-
-          <section className="col-span-12 rounded-2xl border border-zinc-200 bg-white p-4 md:col-span-3">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-zinc-900">Artifacts</h2>
-              <span className="text-xs text-zinc-500">{isLoading ? "…" : artifactDirs.length}</span>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Left · All
+              </span>
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Up · Active
+              </span>
             </div>
-            <p className="mt-2 text-xs text-zinc-500">
-              Manage project-level <span className="font-mono">artifacts/</span> directories for workflow node{" "}
-              <span className="font-mono">outputs</span> selection and validation (runtime:{" "}
-              <span className="font-mono">@project/artifacts/...</span>).
-            </p>
-
-            {isLoading ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Loading...</p>
-              </div>
-            ) : activeError ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Failed to load artifacts.</p>
-              </div>
-            ) : (
-              <>
-                {artifactsError ? (
+            <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto pr-1">
+              {agents.length === 0 ? (
+                <p className="text-xs text-[#94A0B8]">No agents yet.</p>
+              ) : (
+                agents.map((agent) => (
                   <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+                    key={agent.id}
+                    onClick={() => openEditAgent(agent.id)}
+                    className="flex cursor-pointer items-center justify-between rounded-2xl border border-[#DDE3EE] bg-white px-3 py-2"
                   >
-                    {artifactsError}
+                    <div className="min-w-0 text-left">
+                      <div className="flex items-center gap-2">
+                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-[#4F46E5]">
+                          <path
+                            d="M12 3l1.9 3.9L18 8l-3 2.9.7 4.1-3.7-2-3.7 2 .7-4.1L6 8l4.1-1.1L12 3z"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        <p className="truncate text-xs font-semibold">{agent.title || agent.name}</p>
+                      </div>
+                      <p className="text-[11px] text-[#94A0B8]">{agent.role || "Agent"}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openAiWorkbench("agent", agent.id, "optimize");
+                        }}
+                        disabled={!projectId}
+                        className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2.5 py-1 text-[10px] font-semibold text-[#4F46E5] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        AI workbench
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteAgent(agent.id);
+                        }}
+                        disabled={Boolean(agentsError) || agentDeletingId === agent.id}
+                        className="text-[#C23B3B] disabled:opacity-50"
+                        aria-label={`Delete agent ${agent.title || agent.name}`}
+                      >
+                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5">
+                          <path
+                            d="M3 6h18M8 6V4h8v2m-9 0l1 14h8l1-14"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                ) : null}
-
-                <div className="mt-4 space-y-2">
-                  <label className="block text-xs font-medium text-zinc-700" htmlFor="artifact-dir">
-                    New directory
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      id="artifact-dir"
-                      value={artifactDraft}
-                      onChange={(e) => setArtifactDraft(e.target.value)}
-                      placeholder="create-story or artifacts/create-story"
-                      className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void addArtifactDir()}
-                      disabled={artifactsSaving || !artifactDraft.trim() || Boolean(apiEnvError)}
-                      className="shrink-0 rounded-lg bg-zinc-950 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {artifactsSaving ? "Saving..." : "Add"}
-                    </button>
-                  </div>
-                </div>
-
-                {artifactDirs.length ? (
-                  <ul className="mt-4 space-y-2">
-                    {artifactDirs.map((dir) => (
-                      <li key={dir} className="flex items-center justify-between gap-3">
-                        <span className="min-w-0 truncate font-mono text-xs text-zinc-700">{dir}</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = window.prompt("Rename directory", dir);
-                            if (next === null) return;
-                            const normalized = normalizeArtifactsDir(next);
-                            if (normalized.error || !normalized.value) {
-                              setArtifactsError(normalized.error ?? "Invalid directory.");
-                              return;
-                            }
-                            if (artifactDirs.includes(normalized.value) && normalized.value !== dir) {
-                              setArtifactsError("Directory already exists.");
-                              return;
-                            }
-                            void persistArtifactDirs(artifactDirs.map((d) => (d === dir ? normalized.value! : d)));
-                          }}
-                          disabled={artifactsSaving}
-                          className="shrink-0 rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          Rename
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                    <p className="text-sm text-zinc-600">No directories yet. Try adding artifacts/create-story.</p>
-                  </div>
-                )}
-              </>
-            )}
+                ))
+              )}
+            </div>
           </section>
 
-          <section className="col-span-12 rounded-2xl border border-zinc-200 bg-white p-4 md:col-span-3">
-            <div className="flex items-baseline justify-between">
-              <h2 className="text-sm font-semibold text-zinc-900">Assets</h2>
-              <div className="flex items-center gap-3">
+          <section className="flex h-[560px] min-h-0 flex-col overflow-hidden rounded-[24px] border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Assets</h2>
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={openCreateAsset}
+                  onClick={() => openCreateAsset(selectedAssetFolderPath, "new-folder")}
                   disabled={isLoading || Boolean(activeError) || Boolean(apiEnvError) || assetSaving}
-                  className="rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-3 py-1 text-xs font-semibold text-[#4F46E5] disabled:opacity-60"
                 >
-                  New asset
+                  New Folder
                 </button>
-                <span className="text-xs text-zinc-500">{isLoading ? "…" : assetsList.length}</span>
+                <button
+                  type="button"
+                  onClick={() => openCreateAsset(selectedAssetFolderPath, "new-file")}
+                  disabled={isLoading || Boolean(activeError) || Boolean(apiEnvError) || assetSaving}
+                  className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-xs font-semibold text-[#5F6B82] disabled:opacity-60"
+                >
+                  New File
+                </button>
               </div>
             </div>
-            <p className="mt-2 text-xs text-zinc-500">
-              Manage package-level <span className="font-mono">assets/</span>; exported with <code>.bmad</code> and
-              accessed read-only at runtime via <span className="font-mono">@pkg/assets/...</span>.
-            </p>
-
-            {isLoading ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Loading...</p>
-              </div>
-            ) : activeError ? (
-              <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                <p className="text-sm text-zinc-600">Failed to load assets.</p>
-              </div>
-            ) : (
-              <>
-                {assetsError || assetsParseError ? (
-                  <div
-                    role="alert"
-                    className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-                  >
-                    {assetsError || assetsParseError}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Left · Folder
+              </span>
+              <span className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1 text-[10px] font-semibold text-[#5F6B82]">
+                Up · Name
+              </span>
+              <span className="rounded-full border border-[#C7D2FE] bg-[#EEF3FF] px-3 py-1 text-[10px] font-semibold text-[#4F46E5]">
+                Target · {selectedAssetFolderPath === "assets" ? "Assets/" : `${selectedAssetFolderPath.replace(/^assets\//, "")}/`}
+              </span>
+            </div>
+            <div className="mt-3 min-h-0 flex-1 overflow-x-auto overflow-y-auto pr-1">
+              <div className="min-w-max space-y-2 pb-1">
+                <div
+                  onClick={() => setSelectedAssetFolderPath("assets")}
+                  className={`flex min-w-max cursor-pointer items-center justify-between rounded-2xl border px-3 py-2 transition-colors ${
+                    selectedAssetFolderPath === "assets" ? "border-[#9CB8FF] bg-[#ECF2FF]" : "border-[#DDE3EE] bg-[#EEF2F8]"
+                  }`}
+                >
+                  <div className="flex min-w-max items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleAssetCollapse("assets");
+                      }}
+                      className="flex h-6 w-6 items-center justify-center rounded-full text-[#94A0B8] hover:bg-[#E9EDFF]"
+                      aria-label={isAssetCollapsed("assets") ? "Expand assets" : "Collapse assets"}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        className={`h-3 w-3 transition-transform ${isAssetCollapsed("assets") ? "-rotate-90" : "rotate-0"}`}
+                      >
+                        <path
+                          d="M7 10l5 5 5-5"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <div className="flex min-w-max items-center gap-2 text-left">
+                      <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-[#4F46E5]">
+                        <path
+                          d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <p className="whitespace-nowrap text-xs font-semibold">Assets/</p>
+                    </div>
                   </div>
-                ) : null}
-
-                {!assetsList.length && !(assetsError || assetsParseError) ? (
-                  <div className="mt-4 rounded-xl border border-dashed border-zinc-200 bg-zinc-50 p-4">
-                    <p className="text-sm text-zinc-600">No assets yet.</p>
-                  </div>
+                  {selectedAssetFolderPath === "assets" ? (
+                    <span className="rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2 py-0.5 text-[10px] font-semibold text-[#4F46E5]">
+                      Target
+                    </span>
+                  ) : null}
+                </div>
+                {assetsTree.length ? (
+                  !isAssetCollapsed("assets") ? (
+                    <div className="ml-3 border-l border-[#DDE3EE] pl-3">
+                      <div className="space-y-2">{renderAssetsNodes(assetsTree)}</div>
+                    </div>
+                  ) : null
                 ) : (
-                  <>
-                    <p className="mt-3 text-[11px] text-zinc-500">
-                      Total size: {Math.round(assetsParsed.totalBytes / 1024)} KiB
-                    </p>
-                    <ul className="mt-2 space-y-2">
-                      {assetsList.map((asset) => (
-                        <li key={asset.path} className="rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate font-mono text-xs text-zinc-700">{asset.path}</p>
-                              <p className="mt-1 text-[11px] text-zinc-500">{Math.round(asset.bytes / 1024)} KiB</p>
-                            </div>
-                            <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
-                              <button
-                                type="button"
-                                onClick={() => void copyTextSilent(asset.path)}
-                                className="text-xs font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-                              >
-                                Copy path
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void copyTextSilent(toRuntimeAssetPath(asset.path))}
-                                className="text-xs font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-                              >
-                                Copy @pkg
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => openEditAsset(asset.path)}
-                                className="text-xs font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-                              >
-                                Edit
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void deleteAsset(asset.path)}
-                                disabled={assetDeletingPath === asset.path}
-                                className="text-xs font-medium text-red-700 underline underline-offset-4 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {assetDeletingPath === asset.path ? "Deleting..." : "Delete"}
-                              </button>
-                            </div>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
+                  <p className="text-xs text-[#94A0B8]">No assets yet.</p>
                 )}
-              </>
-            )}
+              </div>
+            </div>
           </section>
         </div>
+
+        <section className="mt-6 rounded-[24px] border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Overview</h2>
+            <button
+              type="button"
+              onClick={() => setReadmeModalOpen(true)}
+              className="rounded-full border border-[#DDE3EE] bg-white px-2 py-1 text-[#5F6B82]"
+              aria-label="Edit overview"
+            >
+              <svg viewBox="0 0 24 24" className="h-3.5 w-3.5">
+                <path
+                  d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </div>
+          <div className="mt-3 min-h-40 rounded-xl border border-[#DDE3EE] bg-white px-4 py-3">
+            <MarkdownPreview markdown={readmeDraft} emptyText="No overview yet. Click the edit button to add one." />
+          </div>
+        </section>
       </div>
+
+      {readmeModalOpen ? (
+        <MarkdownEditorModal
+          title="Edit Overview"
+          value={readmeDraft}
+          placeholder="Write the overview here..."
+          onChange={setReadmeDraft}
+          onClose={() => setReadmeModalOpen(false)}
+        />
+      ) : null}
 
       {createWorkflowOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
@@ -2507,23 +2878,26 @@ export default function ProjectBuilderPage() {
 
       {assetModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
-          <div className="absolute inset-0 bg-zinc-950/30" onClick={() => setAssetModalOpen(false)} />
-          <div className="relative w-full max-w-2xl rounded-2xl border border-zinc-200 bg-white p-6 shadow-lg">
-            <div className="flex items-baseline justify-between gap-4">
-              <div>
+          <div className="absolute inset-0 bg-zinc-950/30" onClick={closeAssetModal} />
+          <div
+            className={`relative flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-lg ${
+              assetModalMode === "edit" ? "max-w-6xl p-5" : "max-w-lg p-6"
+            }`}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-200 pb-3">
+              <div className="min-w-0">
                 <h3 className="text-lg font-semibold tracking-tight">
-                  {assetEditingPath ? "Edit asset" : "New asset"}
+                  {assetModalMode === "edit"
+                    ? `Edit ${assetNameDraft || "asset"}`
+                    : assetModalMode === "new-folder"
+                      ? "New folder"
+                      : "New file"}
                 </h3>
-                <p className="mt-1 text-xs text-zinc-500">
-                  MVP supports text files only: .md/.txt/.json/.yaml/.yml (zip path starts with{" "}
-                  <span className="font-mono">assets/</span>; runtime access is{" "}
-                  <span className="font-mono">@pkg/assets/...</span>).
-                </p>
               </div>
               <button
                 type="button"
-                onClick={() => setAssetModalOpen(false)}
-                className="text-sm text-zinc-500 hover:text-zinc-700"
+                onClick={closeAssetModal}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
               >
                 Close
               </button>
@@ -2538,50 +2912,81 @@ export default function ProjectBuilderPage() {
               </div>
             ) : null}
 
-            <div className="mt-4 space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="asset-path">
-                  path <span className="text-red-600">*</span>
+            {assetModalMode === "edit" ? (
+              (() => {
+                const editingPath = assetEditingPath ?? "";
+                const isMarkdownAsset = getAssetCodeLanguage(editingPath) === "markdown";
+                return isMarkdownAsset ? (
+                  <div className="mt-4 grid h-[62vh] min-h-[360px] grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-200">
+                      <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-700">
+                        Editor
+                      </div>
+                      <textarea
+                        id="asset-content"
+                        value={assetContentDraft}
+                        onChange={(e) => {
+                          setAssetContentDraft(e.target.value);
+                          if (assetFormError) setAssetFormError(null);
+                        }}
+                        className="min-h-0 flex-1 resize-none overflow-auto border-0 px-3 py-3 font-mono text-xs leading-6 text-zinc-900 outline-none"
+                        placeholder="# content..."
+                      />
+                    </div>
+                    <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-200">
+                      <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-700">
+                        Preview
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+                        {renderAssetPreview(editingPath, assetContentDraft)}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-4 flex h-[62vh] min-h-[360px] flex-col overflow-hidden rounded-xl border border-zinc-200">
+                    <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-700">
+                      Editor · {getAssetCodeLanguageLabel(editingPath)}
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-auto bg-[#0B1220]">
+                      <Editor
+                        value={assetContentDraft}
+                        onValueChange={(value) => {
+                          setAssetContentDraft(value);
+                          if (assetFormError) setAssetFormError(null);
+                        }}
+                        highlight={(code) => highlightAssetCode(editingPath, code)}
+                        padding={12}
+                        textareaId="asset-content"
+                        className="asset-code-editor min-h-full font-mono text-xs leading-6 text-[#E6EDF6]"
+                        textareaClassName="asset-code-editor__textarea"
+                        preClassName="asset-code-editor__pre"
+                      />
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="mt-4 space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="asset-name">
+                  {assetModalMode === "new-folder" ? "Folder name" : "File name"} <span className="text-red-600">*</span>
                 </label>
                 <input
-                  id="asset-path"
-                  value={assetPathDraft}
+                  id="asset-name"
+                  value={assetNameDraft}
                   onChange={(e) => {
-                    setAssetPathDraft(e.target.value);
+                    setAssetNameDraft(e.target.value);
                     if (assetFormError) setAssetFormError(null);
                   }}
-                  disabled={Boolean(assetEditingPath)}
-                  placeholder="assets/templates/story-template.md"
-                  className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400 disabled:cursor-not-allowed disabled:bg-zinc-50"
-                />
-                {assetEditingPath ? (
-                  <p className="text-xs text-zinc-500">
-                    MVP doesn&apos;t support renaming path (create a new asset and delete the old one).
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium" htmlFor="asset-content">
-                  content
-                </label>
-                <textarea
-                  id="asset-content"
-                  value={assetContentDraft}
-                  onChange={(e) => {
-                    setAssetContentDraft(e.target.value);
-                    if (assetFormError) setAssetFormError(null);
-                  }}
-                  className="min-h-56 w-full resize-y rounded-lg border border-zinc-200 px-3 py-2 font-mono text-[12px] leading-relaxed outline-none focus:border-zinc-400"
-                  placeholder="# story template..."
+                  placeholder={assetModalMode === "new-folder" ? "e.g. templates" : "e.g. design_report.md"}
+                  className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
                 />
               </div>
-            </div>
+            )}
 
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => setAssetModalOpen(false)}
+                onClick={closeAssetModal}
                 className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-50"
               >
                 Cancel
@@ -2598,6 +3003,27 @@ export default function ProjectBuilderPage() {
           </div>
         </div>
       ) : null}
+
+      <AppActionDialog
+        open={Boolean(dialogState)}
+        title={dialogState?.title ?? ""}
+        message={dialogState?.message ?? ""}
+        confirmLabel={dialogState?.kind === "confirm" ? (dialogState.confirmLabel ?? "Confirm") : "OK"}
+        showCancel={dialogState?.kind === "confirm"}
+        tone={dialogState?.kind === "confirm" ? (dialogState.tone ?? "default") : "default"}
+        onCancel={() => {
+          if (dialogState?.kind === "confirm") {
+            dialogState.resolve(false);
+          }
+          setDialogState(null);
+        }}
+        onConfirm={() => {
+          if (dialogState?.kind === "confirm") {
+            dialogState.resolve(true);
+          }
+          setDialogState(null);
+        }}
+      />
 
       {renderAgentMarkdownModal()}
 

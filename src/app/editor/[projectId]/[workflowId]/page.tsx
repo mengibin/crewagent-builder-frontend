@@ -1,16 +1,18 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ErrorObject } from "ajv";
 import Ajv2020 from "ajv/dist/2020";
 
 import { clearAccessToken } from "@/lib/auth";
+import { buildAiWorkbenchUrl } from "@/lib/ai-workbench-client";
 import { normalizeAssetsPath, parseAssetsJson } from "@/lib/assets-v11";
 import workflowGraphSchemaV11 from "@/lib/bmad-spec/v1.1/workflow-graph.schema.json";
-import { deleteJsonWithBody, getApiBaseUrl, getJson, postJson, putJson } from "@/lib/api-client";
+import { getApiBaseUrl, getJson, putJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import { isValidAgentId, uniqueAgentId } from "@/lib/utils";
 import { buildWorkflowGraphV11 } from "@/lib/workflow-graph-v11";
@@ -53,43 +55,6 @@ type PackageAssetsOut = {
 
 type AiStepMode = "create" | "optimize";
 
-type AiStepNodeDraft = {
-  id: string;
-  type: WorkflowNodeType;
-  title: string;
-  agentId: string;
-  inputs: string[];
-  outputs: string[];
-  setsVariables: string[];
-  goal: string;
-  instructions: string;
-  completion: string;
-};
-
-type AiStepDraftRequest = {
-  mode: AiStepMode;
-  userPrompt?: string | null;
-  node: AiStepNodeDraft;
-  context?: {
-    workflowName?: string | null;
-    workflowVariables?: string[];
-    incomingEdges?: Array<Record<string, unknown>>;
-    outgoingEdges?: Array<Record<string, unknown>>;
-  } | null;
-};
-
-type AiAssetUpsert = { path: string; content: string };
-
-type AiStepDraftOut = {
-  mode: AiStepMode;
-  nodeId: string;
-  suggested: Omit<AiStepNodeDraft, "id">;
-  assets: { upsert: AiAssetUpsert[]; delete: string[] };
-  notes: string[];
-  provider?: string | null;
-  model?: string | null;
-};
-
 type WorkflowNodeType = "step" | "decision" | "merge" | "end" | "subworkflow";
 
 type WorkflowNodeData = {
@@ -99,6 +64,7 @@ type WorkflowNodeData = {
   inputs: string[];
   outputs: string[];
   setsVariables: string[];
+  stepFilePath?: string;
   subworkflowId?: number | null;
   goal?: string;
   completion?: string;
@@ -151,10 +117,15 @@ function truncateWithDots(text: string, maxChars: number): string {
 }
 
 function StepNode({
+  id,
   data,
   agentLookup,
   type,
-}: NodeProps<WorkflowNodeData> & { agentLookup: Map<string, ProjectAgent> }) {
+  onOpenAiWorkbench,
+}: NodeProps<WorkflowNodeData> & {
+  agentLookup: Map<string, ProjectAgent>;
+  onOpenAiWorkbench?: (nodeId: string) => void;
+}) {
   const nodeType = (type ?? "step") as WorkflowNodeType;
   const agent = data.agentId ? agentLookup.get(data.agentId) : null;
   const label =
@@ -169,28 +140,30 @@ function StepNode({
             : "Step";
   const accent =
     nodeType === "decision"
-      ? "bg-amber-50 text-amber-800"
+      ? "bg-[#FFF4E5] text-[#9A5B1A] border-[#F2D5A6]"
       : nodeType === "merge"
-        ? "bg-sky-50 text-sky-800"
+        ? "bg-[#EAF5FF] text-[#2B6CB0] border-[#CFE5FF]"
         : nodeType === "end"
-          ? "bg-rose-50 text-rose-800"
-      : nodeType === "subworkflow"
-            ? "bg-violet-50 text-violet-800"
-            : "bg-zinc-100 text-zinc-700";
+          ? "bg-[#FFEFF0] text-[#B23A48] border-[#F5C8CB]"
+          : nodeType === "subworkflow"
+            ? "bg-[#F3E9FF] text-[#6B4BC7] border-[#D9C4FF]"
+            : "bg-[#EEF2F8] text-[#1F2937] border-[#DDE3EE]";
+  const canOpenAi = Boolean(onOpenAiWorkbench);
+
   return (
-    <div className="w-80 rounded-xl border border-zinc-200 bg-white px-3 py-2 shadow-sm">
+    <div className="w-72 rounded-xl border border-[#DDE3EE] bg-white px-3 py-2 shadow-[0_6px_18px_rgba(15,23,42,0.08)]">
       <Handle type="target" position={Position.Top} />
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide">
-            <span className={`rounded-full px-2 py-0.5 ${accent}`}>{label}</span>
+          <p className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+            <span className={`rounded-full border px-2 py-0.5 ${accent}`}>{label}</span>
           </p>
-          <p className="mt-2 line-clamp-2 text-sm font-semibold leading-snug text-zinc-950">{data.title}</p>
+          <p className="mt-2 line-clamp-2 text-sm font-semibold leading-snug text-[#1F2937]">{data.title}</p>
         </div>
         {data.agentId ? (
           <span
             title={agent ? `${agent.icon || "🧩"} ${agent.title || agent.name}` : `${data.agentId} (missing)`}
-            className="max-w-36 truncate rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-700"
+            className="max-w-36 truncate rounded-full border border-[#DDE3EE] bg-[#EEF2F8] px-2 py-0.5 text-[10px] text-[#5F6B82]"
           >
             {agent ? `${agent.icon || "🧩"} ${agent.title || agent.name}` : `${data.agentId} (missing)`}
           </span>
@@ -200,9 +173,23 @@ function StepNode({
         const goalPreview = stripMarkdownPreview(data.goal ?? "");
         const fallback = stripMarkdownPreview(data.instructions ?? "");
         const snippet = truncateWithDots(goalPreview || fallback, 24);
-        if (!snippet) return <p className="mt-2 text-xs text-zinc-400">Click to edit…</p>;
-        return <p className="mt-2 line-clamp-2 text-xs text-zinc-600">{snippet}</p>;
+        if (!snippet) return <p className="mt-2 text-xs text-[#94A0B8]">Click to edit…</p>;
+        return <p className="mt-2 line-clamp-2 text-xs text-[#5F6B82]">{snippet}</p>;
       })()}
+      <div className="mt-2 flex items-center justify-end">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenAiWorkbench?.(id);
+          }}
+          disabled={!canOpenAi}
+          className="nodrag rounded-full border border-[#C7D2FE] bg-[#E9EDFF] px-2.5 py-0.5 text-[10px] font-semibold text-[#4F46E5] disabled:cursor-not-allowed disabled:opacity-60"
+          aria-label="Open AI workbench"
+        >
+          AI workbench
+        </button>
+      </div>
       {nodeType === "end" ? null : <Handle type="source" position={Position.Bottom} />}
     </div>
   );
@@ -320,6 +307,7 @@ function graphSignatureFor(nodes: Node<WorkflowNodeData>[], edges: Edge<Workflow
         inputs: Array.isArray(n.data?.inputs) ? n.data.inputs : [],
         outputs: Array.isArray(n.data?.outputs) ? n.data.outputs : [],
         setsVariables: Array.isArray(n.data?.setsVariables) ? n.data.setsVariables : [],
+        stepFilePath: n.data?.stepFilePath ?? "",
         goal: n.data?.goal ?? "",
         completion: n.data?.completion ?? "",
         ...(typeof n.data?.subworkflowId === "number" ? { subworkflowId: n.data.subworkflowId } : {}),
@@ -433,6 +421,7 @@ function parseGraphJson(
         inputs: string[];
         outputs: string[];
         setsVariables: string[];
+        stepFilePath?: string;
 
         subworkflowId?: number | null;
         goal?: string;
@@ -454,6 +443,11 @@ function parseGraphJson(
         const titleRaw = typeof dataObj?.title === "string" ? dataObj.title : "";
         const legacyName = typeof dataObj?.name === "string" ? dataObj.name : "";
         const title = (titleRaw || legacyName || id || "Untitled").trim() || "Untitled";
+        const filePathRaw = typeof node.file === "string"
+          ? node.file.trim()
+          : typeof dataObj?.stepFilePath === "string"
+            ? dataObj.stepFilePath.trim()
+            : "";
         const instructions = typeof dataObj?.instructions === "string" ? dataObj.instructions : "";
         const goal = typeof dataObj?.goal === "string" ? dataObj.goal : "";
         const completion = typeof dataObj?.completion === "string" ? dataObj.completion : "";
@@ -481,6 +475,7 @@ function parseGraphJson(
             inputs,
             outputs,
             setsVariables,
+            ...(filePathRaw ? { stepFilePath: filePathRaw } : {}),
             goal,
             completion,
             ...(subworkflowId !== null ? { subworkflowId } : {}),
@@ -498,6 +493,7 @@ function parseGraphJson(
             inputs,
             outputs,
             setsVariables,
+            ...(filePathRaw ? { stepFilePath: filePathRaw } : {}),
             goal,
             completion,
             ...(subworkflowId !== null ? { subworkflowId } : {}),
@@ -672,19 +668,45 @@ function parseStepFilesJson(raw: string): { files: Record<string, string>; error
   }
 }
 
+function findStepFileForNode(
+  stepFiles: Record<string, string>,
+  nodeId: string,
+): { path: string; content: string } | null {
+  const targetNodeId = nodeId.trim();
+  if (!targetNodeId) return null;
+
+  for (const [path, content] of Object.entries(stepFiles)) {
+    if (typeof content !== "string") continue;
+    const parsed = parseStepMarkdown(content);
+    if (parsed.success && parsed.data?.frontmatter?.nodeId?.trim() === targetNodeId) {
+      return { path, content };
+    }
+  }
+
+  const fallbackPath = `steps/${targetNodeId}.md`;
+  const fallback = stepFiles[fallbackPath];
+  if (typeof fallback === "string") {
+    return { path: fallbackPath, content: fallback };
+  }
+  return null;
+}
+
 function applyStepFilesToNodes(
   nodes: Node<WorkflowNodeData>[],
   stepFiles: Record<string, string>,
 ): Node<WorkflowNodeData>[] {
-  const parsedByNodeId = new Map<string, ReturnType<typeof parseStepMarkdown>["data"]>();
+  const parsedByNodeId = new Map<
+    string,
+    { data: ReturnType<typeof parseStepMarkdown>["data"]; path: string }
+  >();
 
-  for (const content of Object.values(stepFiles)) {
+  for (const [path, content] of Object.entries(stepFiles)) {
     if (typeof content !== "string") continue;
     const parsed = parseStepMarkdown(content);
     if (!parsed.success || !parsed.data) continue;
     const nodeId = parsed.data.frontmatter?.nodeId;
     if (typeof nodeId !== "string" || !nodeId.trim()) continue;
-    parsedByNodeId.set(nodeId.trim(), parsed.data);
+    parsedByNodeId.set(nodeId.trim(), { data: parsed.data, path });
   }
 
   if (!parsedByNodeId.size) return nodes;
@@ -692,8 +714,8 @@ function applyStepFilesToNodes(
   return nodes.map((node) => {
     const step = parsedByNodeId.get(node.id);
     if (!step) return node;
-    const fm = step.frontmatter;
-    const sections = step.sections ?? ({ goal: "", instructions: "" } as StepSections);
+    const fm = step.data.frontmatter;
+    const sections = step.data.sections ?? ({ goal: "", instructions: "" } as StepSections);
     const nextType = isWorkflowNodeType(fm.type) ? fm.type : node.type;
 
     return {
@@ -706,6 +728,7 @@ function applyStepFilesToNodes(
         inputs: Array.isArray(fm.inputs) ? fm.inputs : [],
         outputs: Array.isArray(fm.outputs) ? fm.outputs : [],
         setsVariables: Array.isArray(fm.setsVariables) ? fm.setsVariables : [],
+        stepFilePath: step.path,
         goal: sections.goal ?? "",
         instructions: sections.instructions ?? "",
         completion: sections.completion ?? "",
@@ -750,22 +773,26 @@ function normalizeArtifactsDir(input: string): { value: string | null; error: st
 
 function graphForSave(nodes: Node<WorkflowNodeData>[], edges: Edge<WorkflowEdgeData>[]): WorkflowGraph {
   return {
-    nodes: nodes.map((n) => ({
-      id: n.id,
-      type: isWorkflowNodeType(n.type) ? n.type : "step",
-      position: n.position,
-      data: {
-        title: n.data?.title ?? "",
-        instructions: n.data?.instructions ?? "",
-        agentId: n.data?.agentId ?? "",
-        inputs: Array.isArray(n.data?.inputs) ? n.data.inputs : [],
-        outputs: Array.isArray(n.data?.outputs) ? n.data.outputs : [],
-        setsVariables: Array.isArray(n.data?.setsVariables) ? n.data.setsVariables : [],
-        goal: n.data?.goal ?? "",
-        completion: n.data?.completion ?? "",
-        ...(typeof n.data?.subworkflowId === "number" ? { subworkflowId: n.data.subworkflowId } : {}),
-      },
-    })),
+    nodes: nodes.map((n) => {
+      const stepFilePath = (n.data?.stepFilePath ?? `steps/${n.id}.md`).trim() || `steps/${n.id}.md`;
+      return {
+        id: n.id,
+        type: isWorkflowNodeType(n.type) ? n.type : "step",
+        position: n.position,
+        file: stepFilePath,
+        data: {
+          title: n.data?.title ?? "",
+          instructions: n.data?.instructions ?? "",
+          agentId: n.data?.agentId ?? "",
+          inputs: Array.isArray(n.data?.inputs) ? n.data.inputs : [],
+          outputs: Array.isArray(n.data?.outputs) ? n.data.outputs : [],
+          setsVariables: Array.isArray(n.data?.setsVariables) ? n.data.setsVariables : [],
+          goal: n.data?.goal ?? "",
+          completion: n.data?.completion ?? "",
+          ...(typeof n.data?.subworkflowId === "number" ? { subworkflowId: n.data.subworkflowId } : {}),
+        },
+      } as unknown as Node<WorkflowNodeData>;
+    }),
     edges: edges.map((e, idx) => ({
       id: e.id ?? `e-${e.source}-${e.target}-${idx}`,
       source: e.source,
@@ -867,8 +894,19 @@ export default function EditorPage() {
 
   const router = useRouter();
   const params = useParams<{ projectId: string; workflowId: string }>();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const ready = useRequireAuth();
   const { error: apiEnvError } = getApiBaseUrl();
+
+  const projectId = params?.projectId;
+  const workflowId = params?.workflowId;
+  const workflowKey = projectId && workflowId ? `${projectId}:${workflowId}` : null;
+  const searchQuery = searchParams.toString();
+  const returnTo = useMemo(() => {
+    if (!pathname) return "";
+    return searchQuery ? `${pathname}?${searchQuery}` : pathname;
+  }, [pathname, searchQuery]);
 
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowDetail | null>(null);
@@ -908,6 +946,7 @@ export default function EditorPage() {
           inputs: [],
           outputs: [],
           setsVariables: [],
+          stepFilePath: "steps/step-1.md",
         },
       },
     ],
@@ -921,15 +960,45 @@ export default function EditorPage() {
     () => new Map(projectAgents.map((a) => [a.id, a] as const)),
     [projectAgents],
   );
+  const openAiWorkbenchForNode = useCallback(
+    (nodeId: string, mode: AiStepMode = "optimize") => {
+      if (!projectId) return;
+      const normalized = nodeId.trim();
+      if (!normalized) return;
+      const parsedWorkflowId = Number.parseInt(workflowId, 10);
+      router.push(
+        buildAiWorkbenchUrl({
+          projectId,
+          targetType: "step",
+          targetId: normalized,
+          mode,
+          workflowId: Number.isFinite(parsedWorkflowId) && parsedWorkflowId > 0 ? parsedWorkflowId : null,
+          source: "editor",
+          returnTo,
+        }),
+      );
+    },
+    [projectId, returnTo, router, workflowId],
+  );
   const nodeTypes = useMemo(
     () => ({
-      step: (props: NodeProps<WorkflowNodeData>) => <StepNode {...props} agentLookup={agentsById} />,
-      decision: (props: NodeProps<WorkflowNodeData>) => <StepNode {...props} agentLookup={agentsById} />,
-      merge: (props: NodeProps<WorkflowNodeData>) => <StepNode {...props} agentLookup={agentsById} />,
-      end: (props: NodeProps<WorkflowNodeData>) => <StepNode {...props} agentLookup={agentsById} />,
-      subworkflow: (props: NodeProps<WorkflowNodeData>) => <StepNode {...props} agentLookup={agentsById} />,
+      step: (props: NodeProps<WorkflowNodeData>) => (
+        <StepNode {...props} agentLookup={agentsById} onOpenAiWorkbench={openAiWorkbenchForNode} />
+      ),
+      decision: (props: NodeProps<WorkflowNodeData>) => (
+        <StepNode {...props} agentLookup={agentsById} onOpenAiWorkbench={openAiWorkbenchForNode} />
+      ),
+      merge: (props: NodeProps<WorkflowNodeData>) => (
+        <StepNode {...props} agentLookup={agentsById} onOpenAiWorkbench={openAiWorkbenchForNode} />
+      ),
+      end: (props: NodeProps<WorkflowNodeData>) => (
+        <StepNode {...props} agentLookup={agentsById} onOpenAiWorkbench={openAiWorkbenchForNode} />
+      ),
+      subworkflow: (props: NodeProps<WorkflowNodeData>) => (
+        <StepNode {...props} agentLookup={agentsById} onOpenAiWorkbench={openAiWorkbenchForNode} />
+      ),
     }),
-    [agentsById],
+    [agentsById, openAiWorkbenchForNode],
   );
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -945,28 +1014,45 @@ export default function EditorPage() {
   const [assetsJsonRaw, setAssetsJsonRaw] = useState<string>("{}");
   const [assetsError, setAssetsError] = useState<string | null>(null);
 
-  const [aiPromptDraft, setAiPromptDraft] = useState<string>("");
-  const [aiStatus, setAiStatus] = useState<"idle" | "loading" | "applying">("idle");
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiSuggestion, setAiSuggestion] = useState<AiStepDraftOut | null>(null);
-
   const [paletteOpen, setPaletteOpen] = useState(true);
-
-  const projectId = params?.projectId;
-  const workflowId = params?.workflowId;
-  const workflowKey = projectId && workflowId ? `${projectId}:${workflowId}` : null;
 
   const assetsParsed = useMemo(() => parseAssetsJson(assetsJsonRaw), [assetsJsonRaw]);
   const assetsList = assetsParsed.assets;
   const assetsParseError = assetsParsed.error;
 
   const editorAgents = useMemo(() => projectAgents.map((a) => ({ id: a.id, name: a.name })), [projectAgents]);
+  const storedStepFileByNodeId = useMemo(() => {
+    const byNodeId = new Map<string, { path: string; content: string }>();
+    for (const [path, content] of Object.entries(storedStepFiles)) {
+      if (typeof content !== "string") continue;
+      const parsed = parseStepMarkdown(content);
+      if (parsed.success && parsed.data?.frontmatter?.nodeId?.trim()) {
+        byNodeId.set(parsed.data.frontmatter.nodeId.trim(), { path, content });
+      } else {
+        const stem = path.endsWith(".md") ? path.slice(0, -3).split("/").pop() ?? "" : "";
+        if (stem) byNodeId.set(stem, { path, content });
+      }
+    }
+    return byNodeId;
+  }, [storedStepFiles]);
 
   const handleStepEditorChange = useCallback(
     (newMd: string) => {
       // Find the current selected node ID from closure or rely on state
       // selectedNodeId is available in scope
       if (!selectedNodeId) return;
+
+      setStoredStepFiles((prev) => {
+        const next = { ...prev };
+        const selectedNode = nodes.find((n) => n.id === selectedNodeId);
+        const existingPath = findStepFileForNode(prev, selectedNodeId)?.path;
+        const path =
+          selectedNode?.data?.stepFilePath?.trim() ||
+          existingPath ||
+          `steps/${selectedNodeId}.md`;
+        next[path] = newMd;
+        return next;
+      });
 
       const result = parseStepMarkdown(newMd);
       if (!result.success || !result.data) {
@@ -1000,12 +1086,14 @@ export default function EditorPage() {
         setEdges((eds) => normalizeDecisionDefaultForSource(eds, selectedNodeId, nextType === "decision"));
       }
     },
-    [selectedNodeId, setEdges, setNodes],
+    [nodes, selectedNodeId, setEdges, setNodes],
   );
 
   const selectedNodeMarkdown = useMemo(() => {
     const node = nodes.find((n) => n.id === selectedNodeId);
     if (!node) return "";
+    const fromStored = storedStepFileByNodeId.get(node.id);
+    if (fromStored?.content) return fromStored.content;
     return serializeStepMarkdown({
       frontmatter: {
         schemaVersion: "1.1",
@@ -1024,7 +1112,7 @@ export default function EditorPage() {
       },
       rawContent: "",
     });
-  }, [nodes, selectedNodeId]);
+  }, [nodes, selectedNodeId, storedStepFileByNodeId]);
 
   useEffect(() => {
     if (!ready) return;
@@ -1204,210 +1292,7 @@ export default function EditorPage() {
     setInspectorError(null);
   }, [selectedNode?.id]);
 
-  useEffect(() => {
-    setAiError(null);
-    setAiSuggestion(null);
-  }, [selectedNode?.id]);
-
   const nodeIdPattern = useMemo(() => /^[A-Za-z0-9][A-Za-z0-9._:-]*$/, []);
-
-  const requestAiStepDraft = useCallback(
-    async (mode: AiStepMode) => {
-      if (!ready) return;
-      if (apiEnvError) return;
-      if (!projectId || !workflowId) return;
-      if (!selectedNode) return;
-      if (aiStatus !== "idle") return;
-
-      const userPrompt = aiPromptDraft.trim() || null;
-      if (mode === "create" && !userPrompt) {
-        setAiError("Please describe what you want to generate (prompt is required for Generate).");
-        return;
-      }
-
-      setAiStatus("loading");
-      setAiError(null);
-
-      const incomingEdges = edges
-        .filter((e) => e.target === selectedNode.id)
-        .map((e) => ({
-          from: e.source,
-          to: e.target,
-          label: typeof e.label === "string" ? e.label : "",
-          conditionText: e.data?.conditionText ?? "",
-          isDefault: Boolean(e.data?.isDefault),
-        }));
-      const outgoingEdges = edges
-        .filter((e) => e.source === selectedNode.id)
-        .map((e) => ({
-          from: e.source,
-          to: e.target,
-          label: typeof e.label === "string" ? e.label : "",
-          conditionText: e.data?.conditionText ?? "",
-          isDefault: Boolean(e.data?.isDefault),
-        }));
-      const workflowVariableKeys = workflowVariables.map((v) => v.key.trim()).filter(Boolean);
-
-      const body: AiStepDraftRequest = {
-        mode,
-        userPrompt,
-        node: {
-          id: selectedNode.id,
-          type: (selectedNode.type ?? "step") as WorkflowNodeType,
-          title: selectedNode.data?.title ?? "",
-          agentId: selectedNode.data?.agentId ?? "",
-          inputs: Array.isArray(selectedNode.data?.inputs) ? selectedNode.data.inputs : [],
-          outputs: Array.isArray(selectedNode.data?.outputs) ? selectedNode.data.outputs : [],
-          setsVariables: Array.isArray(selectedNode.data?.setsVariables) ? selectedNode.data.setsVariables : [],
-          goal: selectedNode.data?.goal ?? "",
-          instructions: selectedNode.data?.instructions ?? "",
-          completion: selectedNode.data?.completion ?? "",
-        },
-        context: {
-          workflowName: workflow?.name ?? null,
-          workflowVariables: workflowVariableKeys,
-          incomingEdges,
-          outgoingEdges,
-        },
-      };
-
-      const res = await postJson<AiStepDraftOut>(
-        `/packages/${projectId}/workflows/${workflowId}/ai/step-draft`,
-        body,
-        { auth: true },
-      );
-
-      if (res.error || !res.data) {
-        setAiStatus("idle");
-        setAiError(res.error?.message ?? "AI request failed. Please try again.");
-        return;
-      }
-
-      setAiSuggestion(res.data);
-      setAiStatus("idle");
-    },
-    [
-      aiPromptDraft,
-      aiStatus,
-      apiEnvError,
-      edges,
-      projectId,
-      ready,
-      selectedNode,
-      workflow?.name,
-      workflowId,
-      workflowVariables,
-    ],
-  );
-
-  const applyAiStepSuggestion = useCallback(async () => {
-    if (!ready) return;
-    if (apiEnvError) return;
-    if (!projectId) return;
-    if (!selectedNodeId) return;
-    if (!aiSuggestion) return;
-    if (aiSuggestion.nodeId !== selectedNodeId) {
-      setAiError("Selected node changed; please request a new AI suggestion.");
-      setAiSuggestion(null);
-      return;
-    }
-    if (aiStatus !== "idle") return;
-
-    setAiStatus("applying");
-    setAiError(null);
-
-    const suggestion = aiSuggestion.suggested;
-    const current = selectedNode;
-    const stepTitle = (suggestion.title || current?.data?.title || selectedNodeId).trim();
-
-    const md = serializeStepMarkdown({
-      frontmatter: {
-        schemaVersion: "1.1",
-        nodeId: selectedNodeId,
-        type: (suggestion.type || (current?.type ?? "step")) as "step" | "decision" | "merge" | "end" | "subworkflow",
-        title: stepTitle,
-        agentId: suggestion.agentId ?? current?.data?.agentId ?? "",
-        inputs: Array.isArray(suggestion.inputs) ? suggestion.inputs : current?.data?.inputs ?? [],
-        outputs: Array.isArray(suggestion.outputs) ? suggestion.outputs : current?.data?.outputs ?? [],
-        setsVariables: Array.isArray(suggestion.setsVariables) ? suggestion.setsVariables : current?.data?.setsVariables ?? [],
-      },
-      sections: {
-        goal: suggestion.goal ?? current?.data?.goal ?? "",
-        instructions: suggestion.instructions ?? current?.data?.instructions ?? "",
-        completion: suggestion.completion ?? current?.data?.completion ?? "",
-      },
-      rawContent: "",
-    });
-
-    handleStepEditorChange(md);
-
-    const assetsPatch = aiSuggestion.assets ?? { upsert: [], delete: [] };
-    const normalizedUpserts: AiAssetUpsert[] = [];
-
-    for (const item of assetsPatch.upsert ?? []) {
-      const normalized = normalizeAssetsPath(item.path ?? "");
-      if (normalized.error || !normalized.value) {
-        setAiError(`Invalid asset path from AI: ${item.path} (${normalized.error ?? "invalid"})`);
-        continue;
-      }
-      normalizedUpserts.push({ path: normalized.value, content: String(item.content ?? "") });
-    }
-
-    const deletes = Array.isArray(assetsPatch.delete)
-      ? assetsPatch.delete.map((p) => String(p ?? "")).filter((p) => p.trim())
-      : [];
-
-    for (const rawPath of deletes) {
-      const normalized = normalizeAssetsPath(rawPath);
-      if (normalized.error || !normalized.value) continue;
-      await deleteJsonWithBody<PackageAssetsOut>(
-        `/packages/${projectId}/assets`,
-        { path: normalized.value },
-        { auth: true },
-      );
-    }
-
-    for (const item of normalizedUpserts) {
-      const updated = await putJson<PackageAssetsOut>(
-        `/packages/${projectId}/assets`,
-        { path: item.path, content: item.content },
-        { auth: true },
-      );
-      if (!updated.error) {
-        setAssetsJsonRaw(updated.data?.assetsJson ?? "{}");
-        continue;
-      }
-      if (updated.error.code !== "ASSET_NOT_FOUND") continue;
-
-      const created = await postJson<PackageAssetsOut>(
-        `/packages/${projectId}/assets`,
-        { path: item.path, content: item.content },
-        { auth: true },
-      );
-      if (!created.error) {
-        setAssetsJsonRaw(created.data?.assetsJson ?? "{}");
-      }
-    }
-
-    const refreshedAssets = await getJson<PackageAssetsOut>(`/packages/${projectId}/assets`, { auth: true });
-    if (!refreshedAssets.error && refreshedAssets.data) {
-      setAssetsJsonRaw(refreshedAssets.data.assetsJson ?? "{}");
-      setAssetsError(null);
-    }
-
-    setAiSuggestion(null);
-    setAiPromptDraft("");
-    setAiStatus("idle");
-  }, [
-    aiStatus,
-    aiSuggestion,
-    apiEnvError,
-    handleStepEditorChange,
-    projectId,
-    ready,
-    selectedNode,
-    selectedNodeId,
-  ]);
 
   const workflowVariablesIssues = useMemo(() => {
     const seen = new Set<string>();
@@ -1550,6 +1435,7 @@ export default function EditorPage() {
           inputs: [],
           outputs: [],
           setsVariables: [],
+          stepFilePath: `steps/${nextId}.md`,
           ...(rawType === "subworkflow" ? { subworkflowId: null } : {}),
         },
       });
@@ -1592,7 +1478,29 @@ export default function EditorPage() {
     }
 
     setInspectorError(null);
-    setNodes((nds) => nds.map((n) => (n.id === oldId ? { ...n, id: trimmed } : n)));
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== oldId) return n;
+        const currentPath = (n.data?.stepFilePath ?? "").trim();
+        const nextPath =
+          !currentPath || currentPath === `steps/${oldId}.md` ? `steps/${trimmed}.md` : currentPath;
+        return {
+          ...n,
+          id: trimmed,
+          data: {
+            ...(n.data ?? {
+              title: "",
+              instructions: "",
+              agentId: "",
+              inputs: [],
+              outputs: [],
+              setsVariables: [],
+            }),
+            stepFilePath: nextPath,
+          },
+        };
+      }),
+    );
     setEdges((eds) =>
       eds.map((e) => ({
         ...e,
@@ -1737,7 +1645,7 @@ export default function EditorPage() {
     })();
 
     const stepsIndex = execution.orderedNodes.map((node) => {
-      const file = `steps/${node.id}.md`;
+      const file = (node.data?.stepFilePath ?? `steps/${node.id}.md`).trim() || `steps/${node.id}.md`;
       const title = (node.data?.title ?? node.id).trim() || node.id;
       return `- [${node.id}](${file}) — ${title}`;
     });
@@ -1777,7 +1685,7 @@ export default function EditorPage() {
     });
 
     execution.orderedNodes.forEach((node) => {
-      const filename = `steps/${node.id}.md`;
+      const filename = (node.data?.stepFilePath ?? `steps/${node.id}.md`).trim() || `steps/${node.id}.md`;
       const title = (node.data?.title ?? node.id).trim() || node.id;
       const agentId = (node.data?.agentId ?? "").trim();
       const instructions = (node.data?.instructions ?? "").trim();
@@ -2017,142 +1925,26 @@ export default function EditorPage() {
     );
   }
 
-  const primaryStepFile = Object.keys(stepFilesPreview)[0] ?? "steps/step-1.md";
-  const primaryStepPreview = stepFilesPreview[primaryStepFile] ?? "";
-  const primaryStepStored = storedStepFiles[primaryStepFile] ?? "";
-
   return (
-    <>
-      {aiSuggestion ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-xl">
-            <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-4 py-3">
-              <div>
-                <p className="text-sm font-semibold text-zinc-900">AI Suggestion</p>
-                <p className="mt-1 text-xs text-zinc-500">
-                  Node: <span className="font-mono">{aiSuggestion.nodeId}</span>{" "}
-                  <span className="text-zinc-300">·</span> Mode:{" "}
-                  <span className="font-mono">{aiSuggestion.mode}</span>{" "}
-                  {aiSuggestion.provider ? (
-                    <>
-                      <span className="text-zinc-300">·</span>{" "}
-                      <span className="font-mono">{aiSuggestion.provider}</span>
-                    </>
-                  ) : null}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAiSuggestion(null)}
-                disabled={aiStatus !== "idle"}
-                className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="max-h-[70vh] overflow-auto p-4">
-              {aiSuggestion.notes?.length ? (
-                <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-700">
-                  <p className="font-medium text-zinc-900">Notes</p>
-                  <ul className="mt-2 list-disc space-y-1 pl-5">
-                    {aiSuggestion.notes.map((note, idx) => (
-                      <li key={`${idx}-${note}`}>{note}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                  <h4 className="text-sm font-semibold text-zinc-900">Current</h4>
-                  <p className="mt-2 text-xs text-zinc-600">Goal</p>
-                  <pre className="mt-1 max-h-48 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
-                    {selectedNode?.data?.goal ?? ""}
-                  </pre>
-                  <p className="mt-3 text-xs text-zinc-600">Instructions</p>
-                  <pre className="mt-1 max-h-64 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
-                    {selectedNode?.data?.instructions ?? ""}
-                  </pre>
-                </div>
-
-                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                  <h4 className="text-sm font-semibold text-zinc-900">Suggested</h4>
-                  <p className="mt-2 text-xs text-zinc-600">Goal</p>
-                  <pre className="mt-1 max-h-48 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
-                    {aiSuggestion.suggested?.goal ?? ""}
-                  </pre>
-                  <p className="mt-3 text-xs text-zinc-600">Instructions</p>
-                  <pre className="mt-1 max-h-64 overflow-auto rounded-xl bg-zinc-50 p-3 text-xs text-zinc-900">
-                    {aiSuggestion.suggested?.instructions ?? ""}
-                  </pre>
-                </div>
-              </div>
-
-              {(aiSuggestion.assets?.upsert?.length || aiSuggestion.assets?.delete?.length) ? (
-                <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-                  <h4 className="text-sm font-semibold text-zinc-900">Assets</h4>
-                  {aiSuggestion.assets.upsert?.length ? (
-                    <div className="mt-2">
-                      <p className="text-xs font-medium text-zinc-700">Upsert</p>
-                      <ul className="mt-1 space-y-1">
-                        {aiSuggestion.assets.upsert.map((asset) => (
-                          <li key={asset.path} className="text-xs text-zinc-700">
-                            <span className="font-mono">{asset.path}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                  {aiSuggestion.assets.delete?.length ? (
-                    <div className="mt-3">
-                      <p className="text-xs font-medium text-zinc-700">Delete</p>
-                      <ul className="mt-1 space-y-1">
-                        {aiSuggestion.assets.delete.map((path) => (
-                          <li key={path} className="text-xs text-zinc-700">
-                            <span className="font-mono">{path}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-zinc-200 px-4 py-3">
-              <button
-                type="button"
-                onClick={() => setAiSuggestion(null)}
-                disabled={aiStatus !== "idle"}
-                className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void applyAiStepSuggestion()}
-                disabled={aiStatus !== "idle"}
-                className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Apply
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-    <main className="min-h-screen bg-zinc-50 text-zinc-950">
-      <div className="flex min-h-screen flex-col px-6 py-6">
+    <main className="min-h-screen bg-[#EEF2F8] text-[#1F2937]">
+      <div className="flex min-h-screen flex-col px-12 py-6">
         <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Workflow Editor</h1>
-            <p className="mt-2 text-sm text-zinc-600">
-              Project: <span className="font-medium text-zinc-900">{project?.name ?? "Loading…"}</span>{" "}
-              <span className="text-zinc-400">·</span> Workflow:{" "}
-              <span className="font-medium text-zinc-900">{workflow?.name ?? "Loading…"}</span>{" "}
-              <span className="text-zinc-400">·</span>{" "}
-              <span className="font-mono text-zinc-500">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-[#DDE3EE] bg-white p-1">
+                <Image src="/favicon.png" alt="CrewAgent icon" width={32} height={32} className="h-full w-full object-contain" />
+              </div>
+              <div>
+                <p className="text-base font-semibold">CrewAgent Builder</p>
+                <p className="text-xs text-[#94A0B8]">Workflow Editor</p>
+              </div>
+            </div>
+            <p className="mt-2 text-sm text-[#5F6B82]">
+              Project: <span className="font-medium text-[#1F2937]">{project?.name ?? "Loading…"}</span>{" "}
+              <span className="text-[#94A0B8]">·</span> Workflow:{" "}
+              <span className="font-medium text-[#1F2937]">{workflow?.name ?? "Loading…"}</span>{" "}
+              <span className="text-[#94A0B8]">·</span>{" "}
+              <span className="font-mono text-[#94A0B8]">
                 {projectId}/{workflowId}
               </span>
             </p>
@@ -2164,7 +1956,7 @@ export default function EditorPage() {
                   Cannot save: cycle detected
                 </span>
               ) : saveStatus === "saving" ? (
-                <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
+                <span className="rounded-full border border-[#DDE3EE] bg-white px-2 py-0.5 text-xs text-[#5F6B82]">
                   Saving…
                 </span>
               ) : saveStatus === "failed" ? (
@@ -2172,11 +1964,11 @@ export default function EditorPage() {
                   Save failed
                 </span>
               ) : dirty ? (
-                <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-800">
+                <span className="rounded-full border border-[#DDE3EE] bg-[#FFF4E5] px-2 py-0.5 text-xs text-[#9A5B1A]">
                   Unsaved
                 </span>
               ) : (
-                <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+                <span className="rounded-full border border-[#CDEBD9] bg-[#EAF7F0] px-2 py-0.5 text-xs text-[#2A7A4B]">
                   Saved
                 </span>
               )}
@@ -2190,16 +1982,16 @@ export default function EditorPage() {
                   Boolean(execution.error) ||
                   loadedWorkflowKey !== workflowKey
                 }
-                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-900 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-full border border-[#DDE3EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#1F2937] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Save now
               </button>
             </div>
             <Link
               href={projectId ? `/builder/${projectId}` : "/dashboard"}
-              className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
+              className="text-xs font-semibold text-[#4F46E5]"
             >
-              Back to ProjectBuilder
+              ← Builder
             </Link>
             <button
               type="button"
@@ -2207,9 +1999,9 @@ export default function EditorPage() {
                 clearAccessToken();
                 router.replace("/login");
               }}
-              className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
+              className="text-xs font-semibold text-[#5F6B82]"
             >
-              Sign out
+              Logout
             </button>
           </div>
         </header>
@@ -2272,116 +2064,77 @@ export default function EditorPage() {
           </div>
         ) : null}
 
-        <div className="mt-6 flex flex-1 min-h-0 gap-6">
+        <div className="mt-6 flex flex-1 min-h-0 gap-4">
           {paletteOpen ? (
-            <aside className="w-72 shrink-0 space-y-4">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+            <aside className="w-[260px] shrink-0 space-y-4">
+              <div className="rounded-2xl border border-[#DDE3EE] bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-zinc-900">Palette</h2>
+                  <h2 className="text-sm font-semibold text-[#1F2937]">Palette</h2>
                   <button
                     type="button"
                     onClick={() => setPaletteOpen(false)}
-                    className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                    className="rounded-full border border-[#DDE3EE] bg-white px-2 py-1 text-[10px] font-semibold text-[#5F6B82]"
                   >
                     Collapse
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">Drag nodes onto the canvas.</p>
+                <p className="mt-1 text-xs text-[#94A0B8]">Drag nodes onto the canvas.</p>
 
                 <div className="mt-4 space-y-2">
                   <div
                     draggable
                     onDragStart={(e) => onDragStart(e, "step")}
-                    className="cursor-grab select-none rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-900 active:cursor-grabbing"
+                    className="cursor-grab select-none rounded-xl border border-[#DDE3EE] bg-[#EEF2F8] px-3 py-2 text-xs font-semibold text-[#1F2937] active:cursor-grabbing"
                   >
                     Step
                   </div>
                   <div
                     draggable
                     onDragStart={(e) => onDragStart(e, "decision")}
-                    className="cursor-grab select-none rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 active:cursor-grabbing"
+                    className="cursor-grab select-none rounded-xl border border-[#F2D5A6] bg-[#FFF4E5] px-3 py-2 text-xs font-semibold text-[#9A5B1A] active:cursor-grabbing"
                   >
                     Decision
                   </div>
                   <div
                     draggable
                     onDragStart={(e) => onDragStart(e, "merge")}
-                    className="cursor-grab select-none rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-900 active:cursor-grabbing"
+                    className="cursor-grab select-none rounded-xl border border-[#CFE5FF] bg-[#EAF5FF] px-3 py-2 text-xs font-semibold text-[#2B6CB0] active:cursor-grabbing"
                   >
                     Merge
                   </div>
                   <div
                     draggable
                     onDragStart={(e) => onDragStart(e, "end")}
-                    className="cursor-grab select-none rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-900 active:cursor-grabbing"
+                    className="cursor-grab select-none rounded-xl border border-[#F5C8CB] bg-[#FFEFF0] px-3 py-2 text-xs font-semibold text-[#B23A48] active:cursor-grabbing"
                   >
                     End
                   </div>
                   <div
                     draggable
                     onDragStart={(e) => onDragStart(e, "subworkflow")}
-                    className="cursor-grab select-none rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-900 active:cursor-grabbing"
+                    className="cursor-grab select-none rounded-xl border border-[#D9C4FF] bg-[#F3E9FF] px-3 py-2 text-xs font-semibold text-[#6B4BC7] active:cursor-grabbing"
                   >
                     Subworkflow
                   </div>
                 </div>
               </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <h2 className="text-sm font-semibold text-zinc-900">Tips</h2>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-zinc-600">
-                  <li>Click a node to edit its config in the Inspector.</li>
-                  <li>Edges support label / conditionText; decision nodes support a default branch.</li>
-                </ul>
-              </div>
-
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <h2 className="text-sm font-semibold text-zinc-900">Execution Order</h2>
-                {execution.error ? (
-                  <div
-                    role="alert"
-                    className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"
-                  >
-                    {execution.error}
-                  </div>
-                ) : null}
-                {execution.warnings.length ? (
-                  <div className="mt-3 space-y-2">
-                    {execution.warnings.map((msg) => (
-                      <div
-                        key={msg}
-                        role="status"
-                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
-                      >
-                        {msg}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-
-                <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-zinc-700">
-                  {execution.orderedNodes.map((n) => (
-                    <li key={n.id}>{n.data?.title ?? n.id}</li>
-                  ))}
-                </ol>
-              </div>
             </aside>
           ) : null}
 
-          <section className="flex min-w-0 flex-1 flex-col gap-6">
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-              <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
+          <section className="flex min-w-0 flex-1 flex-col gap-4">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-[#DDE3EE] bg-white shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+              <div className="flex items-center justify-between border-b border-[#F1E8E2] px-4 py-3">
                 <div>
-                  <p className="text-sm font-semibold text-zinc-900">Canvas</p>
-                  <p className="text-xs text-zinc-500">{nodes.length} nodes</p>
+                  <p className="text-sm font-semibold text-[#1F2937]">Canvas</p>
+                  <p className="text-xs text-[#94A0B8]">{nodes.length} nodes</p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <p className="text-xs text-zinc-500">Drag & Drop · Click</p>
+                  <p className="text-xs text-[#94A0B8]">Drag & Drop · Click</p>
                   {!paletteOpen ? (
                     <button
                       type="button"
                       onClick={() => setPaletteOpen(true)}
-                      className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                      className="rounded-full border border-[#DDE3EE] bg-white px-2 py-1 text-[10px] font-semibold text-[#5F6B82]"
                     >
                       Show Palette
                     </button>
@@ -2390,7 +2143,7 @@ export default function EditorPage() {
                     <button
                       type="button"
                       onClick={() => setInspectorOpen(true)}
-                      className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                      className="rounded-full border border-[#DDE3EE] bg-white px-2 py-1 text-[10px] font-semibold text-[#5F6B82]"
                     >
                       Show Inspector
                     </button>
@@ -2398,7 +2151,7 @@ export default function EditorPage() {
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1">
+              <div className="min-h-0 flex-1 bg-white p-3">
                 <ReactFlowProvider>
                   <ReactFlow
                     nodes={nodes}
@@ -2419,112 +2172,24 @@ export default function EditorPage() {
                     fitView
                     className="h-full"
                   >
-                    <Background gap={16} size={1} />
+                    <Background gap={18} size={1} color="rgba(232, 221, 216, 1)" />
                     <Controls />
                   </ReactFlow>
                 </ReactFlowProvider>
               </div>
             </div>
 
-            {workflow && loadedWorkflowKey === workflowKey ? (
-              <details className="rounded-2xl border border-zinc-200 bg-white p-4">
-                <summary className="cursor-pointer select-none text-sm font-semibold text-zinc-900">
-                  Debug Previews
-                </summary>
-                <div className="mt-4 grid gap-6 lg:grid-cols-2">
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">workflow.md (preview)</h3>
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {workflowMdPreview}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">workflow.md (stored)</h3>
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {workflow.workflowMd}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">workflow.graph.json (preview)</h3>
-                    {workflowGraphBuild.errors.length ? (
-                      <div
-                        role="alert"
-                        className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900"
-                      >
-                        {workflowGraphBuild.errors.join("; ")}
-                      </div>
-                    ) : null}
-                    {workflowGraphSchemaError ? (
-                      <div
-                        role="alert"
-                        className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-                      >
-                        Schema validation failed: {workflowGraphSchemaError}
-                      </div>
-                    ) : null}
-                    {workflowGraphBuild.warnings.length ? (
-                      <div className="mt-3 space-y-2">
-                        {workflowGraphBuild.warnings.map((msg) => (
-                          <div
-                            key={msg}
-                            role="status"
-                            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-                          >
-                            {msg}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {workflowGraphPreview || "(not generated yet)"}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">{primaryStepFile} (preview)</h3>
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {primaryStepPreview}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">{primaryStepFile} (stored)</h3>
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {primaryStepStored || "(step files not saved yet)"}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">agents.json (preview)</h3>
-                    {agentsJsonError ? (
-                      <div
-                        role="alert"
-                        className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900"
-                      >
-                        {agentsJsonError}
-                      </div>
-                    ) : null}
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {agentsJsonPreview}
-                    </pre>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <h3 className="text-sm font-semibold text-zinc-900">agents.json (stored)</h3>
-                    <pre className="mt-3 max-h-72 overflow-auto rounded-xl bg-zinc-50 p-4 text-xs text-zinc-900">
-                      {project?.agentsJson ?? "[]"}
-                    </pre>
-                  </div>
-                </div>
-              </details>
-            ) : null}
           </section>
 
           {inspectorOpen ? (
-            <aside className="w-96 shrink-0 space-y-4 lg:w-[520px]">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+            <aside className="w-[640px] shrink-0 space-y-4">
+              <div className="rounded-3xl border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-zinc-900">Inspector</h2>
+                  <h2 className="text-sm font-semibold text-[#1F2937]">Inspector</h2>
                   <button
                     type="button"
                     onClick={() => setInspectorOpen(false)}
-                    className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                    className="rounded-full border border-[#DDE3EE] bg-white px-2 py-1 text-[10px] font-semibold text-[#5F6B82]"
                   >
                     Collapse
                   </button>
@@ -2536,8 +2201,8 @@ export default function EditorPage() {
                     onClick={() => setInspectorTab("node")}
                     className={
                       inspectorTab === "node"
-                        ? "rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white"
-                        : "rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        ? "rounded-full bg-[#4F46E5] px-3 py-1.5 text-xs font-semibold text-white"
+                        : "rounded-full border border-[#DDE3EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#5F6B82]"
                     }
                   >
                     Node
@@ -2547,8 +2212,8 @@ export default function EditorPage() {
                     onClick={() => setInspectorTab("workflow")}
                     className={
                       inspectorTab === "workflow"
-                        ? "rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white"
-                        : "rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        ? "rounded-full bg-[#4F46E5] px-3 py-1.5 text-xs font-semibold text-white"
+                        : "rounded-full border border-[#DDE3EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#5F6B82]"
                     }
                   >
                     Workflow
@@ -2558,8 +2223,8 @@ export default function EditorPage() {
                     onClick={() => setInspectorTab("artifacts")}
                     className={
                       inspectorTab === "artifacts"
-                        ? "rounded-lg bg-zinc-950 px-3 py-1.5 text-xs font-medium text-white"
-                        : "rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
+                        ? "rounded-full bg-[#4F46E5] px-3 py-1.5 text-xs font-semibold text-white"
+                        : "rounded-full border border-[#DDE3EE] bg-white px-3 py-1.5 text-xs font-semibold text-[#5F6B82]"
                     }
                   >
                     Artifacts
@@ -2777,63 +2442,6 @@ export default function EditorPage() {
                       <p className="text-xs text-zinc-500">Used for exporting `steps/&lt;nodeId&gt;.md`.</p>
                     </div>
 
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h3 className="text-sm font-semibold text-zinc-900">AI (Step)</h3>
-                        <span className="text-xs text-zinc-400">
-                          {aiStatus === "loading" ? "Generating…" : aiStatus === "applying" ? "Applying…" : null}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        Generate or refine the selected step (and optionally propose `assets/` files). Preview → Apply.
-                      </p>
-
-                      <div className="mt-3 space-y-2">
-                        <label className="text-xs font-medium text-zinc-700" htmlFor="ai-step-prompt">
-                          Prompt <span className="text-zinc-400">(required for Generate)</span>
-                        </label>
-                        <textarea
-                          id="ai-step-prompt"
-                          value={aiPromptDraft}
-                          onChange={(e) => {
-                            setAiPromptDraft(e.target.value);
-                            if (aiError) setAiError(null);
-                          }}
-                          placeholder="e.g. Create a compliance check step using the travel policy and output a JSON report to artifacts/reports/..."
-                          className="min-h-20 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
-                          disabled={aiStatus !== "idle"}
-                        />
-
-                        {aiError ? (
-                          <div
-                            role="alert"
-                            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900"
-                          >
-                            {aiError}
-                          </div>
-                        ) : null}
-
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void requestAiStepDraft("create")}
-                            disabled={aiStatus !== "idle" || !aiPromptDraft.trim()}
-                            className="rounded-lg bg-zinc-950 px-3 py-2 text-xs font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Generate
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void requestAiStepDraft("optimize")}
-                            disabled={aiStatus !== "idle"}
-                            className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Optimize
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
                     {(selectedNode.type === "step" || selectedNode.type === "decision" || selectedNode.type === "merge" || selectedNode.type === "end" || selectedNode.type === "subworkflow") ? (
                       <StepEditorPanel
                         content={selectedNodeMarkdown}
@@ -2956,6 +2564,5 @@ export default function EditorPage() {
         </div>
       </div>
     </main>
-    </>
   );
 }

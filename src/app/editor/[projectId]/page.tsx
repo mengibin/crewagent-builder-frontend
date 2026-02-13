@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -88,19 +89,46 @@ export default function EditorProjectRedirectPage() {
 
   if (!ready) {
     return (
-      <main className="min-h-screen bg-zinc-50 text-zinc-950">
+      <main className="min-h-screen bg-[#EEF2F8] text-[#1F2937]">
         <div className="mx-auto max-w-3xl px-6 py-16">
-          <p className="text-sm text-zinc-600">Redirecting...</p>
+          <p className="text-sm text-[#5F6B82]">Redirecting...</p>
         </div>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen bg-zinc-50 text-zinc-950">
+    <main className="min-h-screen bg-[#EEF2F8] text-[#1F2937]">
       <div className="mx-auto max-w-3xl px-6 py-16">
-        <h1 className="text-2xl font-semibold tracking-tight">Workflow Editor</h1>
-        <p className="mt-2 text-sm text-zinc-600">Opening default workflow…</p>
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl border border-[#DDE3EE] bg-white p-1">
+              <Image src="/favicon.png" alt="CrewAgent icon" width={32} height={32} className="h-full w-full object-contain" />
+            </div>
+            <div>
+              <p className="text-base font-semibold">CrewAgent Builder</p>
+              <p className="text-xs text-[#94A0B8]">Workflow Editor</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-xs font-semibold">
+            <Link href={projectId ? `/builder/${projectId}` : "/dashboard"} className="text-[#4F46E5]">
+              ← Builder
+            </Link>
+            <button
+              type="button"
+              onClick={() => {
+                clearAccessToken();
+                router.replace("/login");
+              }}
+              className="text-[#5F6B82]"
+            >
+              Logout
+            </button>
+          </div>
+        </header>
+
+        <h1 className="mt-6 text-2xl font-semibold tracking-tight">Workflow Editor</h1>
+        <p className="mt-2 text-sm text-[#5F6B82]">Opening default workflow…</p>
 
         {apiEnvError ? (
           <div
@@ -120,25 +148,6 @@ export default function EditorProjectRedirectPage() {
             <p className="mt-1 text-sm">{formattedError.message}</p>
           </div>
         ) : null}
-
-        <div className="mt-6 flex flex-wrap gap-4">
-          <Link
-            href={projectId ? `/builder/${projectId}` : "/dashboard"}
-            className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-          >
-            Back to ProjectBuilder
-          </Link>
-          <button
-            type="button"
-            onClick={() => {
-              clearAccessToken();
-              router.replace("/login");
-            }}
-            className="text-sm font-medium text-zinc-950 underline underline-offset-4 hover:text-zinc-700"
-          >
-            Sign out
-          </button>
-        </div>
       </div>
     </main>
   );
