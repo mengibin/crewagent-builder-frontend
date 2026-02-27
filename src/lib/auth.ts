@@ -1,5 +1,12 @@
 const ACCESS_TOKEN_KEY = "crewagent.accessToken";
+const USER_KEY = "crewagent.user";
 const ACCESS_TOKEN_EVENT = "crewagent:auth-token-changed";
+
+export interface User {
+  id: number;
+  email: string;
+  username: string;
+}
 
 function isBrowser(): boolean {
   return typeof window !== "undefined";
@@ -33,10 +40,31 @@ export function getAccessToken(): string | null {
   }
 }
 
+export function setUser(user: User): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } catch {
+    // ignore
+  }
+}
+
+export function getUser(): User | null {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(USER_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as User;
+  } catch {
+    return null;
+  }
+}
+
 export function clearAccessToken(): void {
   if (!isBrowser()) return;
   try {
     window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+    window.localStorage.removeItem(USER_KEY);
     notifyAccessTokenChanged();
   } catch {
     // ignore

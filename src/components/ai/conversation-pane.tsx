@@ -190,7 +190,7 @@ function MarkdownMessage({ markdown }: { markdown: string }) {
         ol: ({ node: _node, ...props }) => ((void _node), <ol {...props} className="my-1 list-decimal space-y-1 pl-5" />),
         li: ({ node: _node, ...props }) => ((void _node), <li {...props} className="break-words" />),
         a: ({ node: _node, ...props }) =>
-          ((void _node),
+        ((void _node),
           (
             <a
               {...props}
@@ -205,7 +205,7 @@ function MarkdownMessage({ markdown }: { markdown: string }) {
           className,
           ...props
         }: React.ComponentPropsWithoutRef<"code"> & { inline?: boolean; node?: unknown }) =>
-          ((void _node),
+        ((void _node),
           inline ? (
             <code {...props} className="rounded bg-black/10 px-1 py-0.5 font-mono text-[11px]" />
           ) : (
@@ -244,7 +244,7 @@ export function ConversationPane({
   const handleComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter") return;
     if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
-    if (event.key === "Process") return;
+
     if (event.nativeEvent.isComposing) return;
     if (busy || !composerValue.trim()) return;
 

@@ -713,7 +713,7 @@ function applyStepFilesToNodes(
 
   return nodes.map((node) => {
     const step = parsedByNodeId.get(node.id);
-    if (!step) return node;
+    if (!step || !step.data) return node;
     const fm = step.data.frontmatter;
     const sections = step.data.sections ?? ({ goal: "", instructions: "" } as StepSections);
     const nextType = isWorkflowNodeType(fm.type) ? fm.type : node.type;
@@ -2490,7 +2490,7 @@ export default function EditorPage() {
                     ) : null}
 
                     <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-	                      <h3 className="text-sm font-semibold text-zinc-900">Outgoing edges</h3>
+                      <h3 className="text-sm font-semibold text-zinc-900">Outgoing edges</h3>
                       {edges.filter((e) => e.source === selectedNode.id).length ? (
                         <div className="mt-3 space-y-3">
                           {edges
@@ -2508,8 +2508,8 @@ export default function EditorPage() {
                                   </p>
 
                                   <div className="mt-2 grid gap-2">
-	                                    <div className="grid gap-1.5">
-		                                      <label className="text-xs font-medium text-zinc-700">Label (label)</label>
+                                    <div className="grid gap-1.5">
+                                      <label className="text-xs font-medium text-zinc-700">Label (label)</label>
                                       <input
                                         type="text"
                                         value={typeof edge.label === "string" ? edge.label : ""}
@@ -2517,14 +2517,14 @@ export default function EditorPage() {
                                         className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-400"
                                       />
                                       <p className="text-[11px] text-zinc-500">
-	                                        If empty, it will be auto-generated (single: next / multi: branch-n).
+                                        If empty, it will be auto-generated (single: next / multi: branch-n).
                                       </p>
                                     </div>
 
-	                                    <div className="grid gap-1.5">
-		                                      <label className="text-xs font-medium text-zinc-700">
-		                                        Condition text (conditionText)
-		                                      </label>
+                                    <div className="grid gap-1.5">
+                                      <label className="text-xs font-medium text-zinc-700">
+                                        Condition text (conditionText)
+                                      </label>
                                       <input
                                         type="text"
                                         value={edge.data?.conditionText ?? ""}
@@ -2542,7 +2542,7 @@ export default function EditorPage() {
                                           checked={Boolean(edge.data?.isDefault)}
                                           onChange={() => setDecisionDefaultEdge(selectedNode.id, edge.id)}
                                         />
-	                                        Default branch (isDefault)
+                                        Default branch (isDefault)
                                       </label>
                                     ) : null}
                                   </div>

@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { useState } from "react";
 
 import { getApiBaseUrl, postJson } from "@/lib/api-client";
-import { getAccessToken, setAccessToken } from "@/lib/auth";
+import { getAccessToken, setAccessToken, setUser } from "@/lib/auth";
 
 type Tab = "login" | "register";
 type LoginField = "email" | "password";
@@ -131,6 +131,7 @@ export default function LoginPage() {
       }
 
       setAccessToken(result.data.accessToken);
+      setUser(result.data.user);
       router.replace("/dashboard");
     } catch {
       setLoginSubmitError("Request failed. Please try again.");
@@ -183,6 +184,7 @@ export default function LoginPage() {
       }
 
       setAccessToken(result.data.accessToken);
+      setUser(result.data.user);
       router.replace("/dashboard");
     } catch {
       setRegisterSubmitError("Request failed. Please try again.");

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { AppActionDialog, type AppActionDialogTone } from "@/components/AppActionDialog";
-import { clearAccessToken } from "@/lib/auth";
+import { type User, clearAccessToken, getUser, setUser } from "@/lib/auth";
 import { deleteJson, getApiBaseUrl, getJson, postFormData, postJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 
@@ -54,6 +54,7 @@ export default function DashboardPage() {
   const ready = useRequireAuth();
   const { error: apiEnvError } = getApiBaseUrl();
 
+  const [user, setUserState] = useState<User | null>(null);
   const [packages, setPackages] = useState<PackageListItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -83,6 +84,23 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!ready) return;
     if (apiEnvError) return;
+
+    // Load User info
+    const existing = getUser();
+    if (existing) {
+      setUserState(existing);
+    } else {
+      getJson<User>("/users/me", { auth: true })
+        .then((res) => {
+          if (res.data) {
+            setUserState(res.data);
+            setUser(res.data);
+          }
+        })
+        .catch(() => {
+          // ignore user fetch error
+        });
+    }
 
     setIsLoading(true);
     setLoadError(null);
@@ -317,7 +335,7 @@ export default function DashboardPage() {
                 Pinecone hub
               </span>
               <h1 className="mt-4 text-4xl font-semibold leading-tight text-[#1F2937]">
-                Welcome back, Maker
+                Welcome back, {user?.username || "Maker"}
               </h1>
               <p className="mt-3 text-sm text-[#5F6B82]">
                 Manage pinecones, workflows, skills, and assets from a calm dashboard built for builders.

@@ -688,8 +688,8 @@ export function WorkbenchShell({ projectId, target, error, workflowId, source, r
         found = true;
         return {
           ...message,
-          role: "assistant",
-          kind: "chat",
+          role: "assistant" as const,
+          kind: "chat" as const,
           content,
         };
       });
@@ -698,8 +698,8 @@ export function WorkbenchShell({ projectId, target, error, workflowId, source, r
         ...next,
         {
           id: messageId,
-          role: "assistant",
-          kind: "chat",
+          role: "assistant" as const,
+          kind: "chat" as const,
           content,
         },
       ];
