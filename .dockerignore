@@ -1,0 +1,14 @@
+.git
+.gitignore
+.next
+node_modules
+npm-debug.log*
+coverage
+tests
+.tmp-tests
+.env.local
+.env*
+!.env.local.example
+Dockerfile
+docker-compose*.yml
+docker-compose*.yaml
