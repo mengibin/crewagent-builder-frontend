@@ -9,11 +9,7 @@ import { clearAccessToken } from "@/lib/auth";
 import { getApiBaseUrl, getJson, postJson, putJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 
-type LicenseGenerateResponse = {
-  licenseKey: string;
-};
 
-type ExpiryMode = "date" | "permanent";
 type LlmProvider = "disabled" | "openai-compatible";
 
 type LlmAvailability = {
@@ -79,13 +75,7 @@ const LLM_PROVIDER_OPTIONS: Array<{ value: LlmProvider; label: string; descripti
   },
 ];
 
-function parseExpiryDate(value: string): number | null {
-  if (!value) return null;
-  const date = new Date(`${value}T23:59:59.999`);
-  const time = date.getTime();
-  if (Number.isNaN(time)) return null;
-  return time;
-}
+
 
 function normalizeProvider(value: string | null | undefined): LlmProvider {
   const normalized = (value ?? "").trim().toLowerCase();
@@ -207,15 +197,7 @@ export default function ProfilePage() {
   const [isLlmSaving, setIsLlmSaving] = useState(false);
   const [isLlmTesting, setIsLlmTesting] = useState(false);
 
-  const [machineId, setMachineId] = useState("1c2f3a4b5c6d7e8f");
-  const [customerName, setCustomerName] = useState("Acme Studio");
-  const [expiryMode, setExpiryMode] = useState<ExpiryMode>("date");
-  const [expiryDate, setExpiryDate] = useState("2026-12-31");
-  const [formError, setFormError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [licenseKey, setLicenseKey] = useState("");
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+
 
   const loadLlmProfile = useCallback(async () => {
     if (!ready || apiEnvError) return;
@@ -437,87 +419,7 @@ export default function ProfilePage() {
     );
   }
 
-  async function onGenerate(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setFormError(null);
-    setSubmitError(null);
-    setCopyStatus("idle");
 
-    const trimmedMachineId = machineId.trim();
-    if (!trimmedMachineId) {
-      setFormError("Machine ID is required.");
-      return;
-    }
-
-    let expiresAt = -1;
-    if (expiryMode === "date") {
-      const parsed = parseExpiryDate(expiryDate);
-      if (!parsed) {
-        setFormError("Please select a valid expiry date.");
-        return;
-      }
-      expiresAt = parsed;
-    }
-
-    if (apiEnvError) {
-      setSubmitError(apiEnvError);
-      return;
-    }
-
-    setIsGenerating(true);
-    try {
-      const res = await postJson<LicenseGenerateResponse>(
-        "/license/generate",
-        {
-          machineId: trimmedMachineId,
-          customerName: customerName.trim() || undefined,
-          expiresAt,
-          type: "commercial",
-        },
-        { auth: true },
-      );
-
-      if (res.error) {
-        setSubmitError(res.error.message);
-        return;
-      }
-
-      if (!res.data?.licenseKey) {
-        setSubmitError("Unexpected server response. Please try again later.");
-        return;
-      }
-
-      setLicenseKey(res.data.licenseKey);
-    } catch {
-      setSubmitError("Request failed. Please try again.");
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
-  async function onCopy() {
-    if (!licenseKey) return;
-    try {
-      await navigator.clipboard.writeText(licenseKey);
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("error");
-    }
-  }
-
-  function onDownload() {
-    if (!licenseKey) return;
-    const blob = new Blob([licenseKey], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    const safeMachineId = machineId.trim().replace(/[^a-zA-Z0-9-_]+/g, "_") || "license";
-    link.download = `${safeMachineId}.lic`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-  }
 
   return (
     <main className="min-h-screen bg-[#EEF2F8] text-[#1F2937]">
@@ -795,155 +697,6 @@ export default function ProfilePage() {
             </div>
           </CollapsibleCard>
 
-          {/* Generate License Card */}
-          <CollapsibleCard
-            title="Generate License"
-            icon={
-              <svg
-                viewBox="0 0 24 24"
-                className="h-4 w-4 text-[#4F46E5]"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3 11h18" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                <rect x="5" y="11" width="14" height="10" rx="2" />
-              </svg>
-            }
-          >
-            <form className="space-y-3" onSubmit={onGenerate}>
-              <div>
-                <label className="text-xs font-semibold text-[#5F6B82]" htmlFor="machine-id">
-                  Machine ID
-                </label>
-                <input
-                  id="machine-id"
-                  type="text"
-                  value={machineId}
-                  onChange={(e) => setMachineId(e.target.value)}
-                  className="mt-2 w-full rounded-2xl border border-[#DDE3EE] px-4 py-3 text-sm outline-none focus:border-[#4F46E5]"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-[#5F6B82]" htmlFor="customer-name">
-                  Customer Name (optional)
-                </label>
-                <input
-                  id="customer-name"
-                  type="text"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
-                  className="mt-2 w-full rounded-2xl border border-[#DDE3EE] px-4 py-3 text-sm outline-none focus:border-[#4F46E5]"
-                />
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-[#5F6B82]">Expiry</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setExpiryMode("date")}
-                    className={[
-                      "rounded-full border px-3 py-1 text-xs font-semibold",
-                      expiryMode === "date"
-                        ? "border-[#4F46E5] bg-[#E9EDFF] text-[#4F46E5]"
-                        : "border-[#DDE3EE] bg-white text-[#5F6B82]",
-                    ].join(" ")}
-                  >
-                    Set date
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setExpiryMode("permanent")}
-                    className={[
-                      "rounded-full border px-3 py-1 text-xs font-semibold",
-                      expiryMode === "permanent"
-                        ? "border-[#4F46E5] bg-[#E9EDFF] text-[#4F46E5]"
-                        : "border-[#DDE3EE] bg-white text-[#5F6B82]",
-                    ].join(" ")}
-                  >
-                    Permanent
-                  </button>
-                </div>
-                {expiryMode === "date" ? (
-                  <input
-                    type="date"
-                    value={expiryDate}
-                    onChange={(e) => setExpiryDate(e.target.value)}
-                    className="mt-2 w-full rounded-2xl border border-[#DDE3EE] px-4 py-3 text-sm outline-none focus:border-[#4F46E5]"
-                  />
-                ) : (
-                  <input
-                    type="text"
-                    value="Permanent license"
-                    readOnly
-                    className="mt-2 w-full rounded-2xl border border-[#DDE3EE] bg-[#EEF2F8] px-4 py-3 text-sm text-[#5F6B82] outline-none"
-                  />
-                )}
-              </div>
-
-              {formError ? (
-                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
-                  {formError}
-                </p>
-              ) : null}
-              {submitError ? (
-                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
-                  {submitError}
-                </p>
-              ) : null}
-
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={isGenerating}
-                  className="rounded-full bg-[#4F46E5] px-4 py-2 text-xs font-semibold text-white shadow-[0_8px_20px_rgba(79,70,229,0.25)]"
-                >
-                  {isGenerating ? "Generating..." : "Generate License"}
-                </button>
-                <p className="text-[11px] text-[#94A0B8]">Signed offline. No SaaS dependency.</p>
-              </div>
-
-              <div>
-                <p className="text-xs font-semibold text-[#5F6B82]">Output</p>
-                <p className="text-[11px] text-[#94A0B8]">Copy or download the signed license key.</p>
-                <textarea
-                  readOnly
-                  value={licenseKey}
-                  placeholder="License key will appear here."
-                  className="mt-2 h-28 w-full resize-none rounded-2xl border border-[#DDE3EE] bg-[#EEF2F8] px-4 py-3 text-xs text-[#5F6B82] outline-none"
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={onCopy}
-                  disabled={!licenseKey}
-                  className="rounded-full border border-[#DDE3EE] bg-white px-4 py-2 text-xs font-semibold text-[#5F6B82]"
-                >
-                  {copyStatus === "copied" ? "Copied" : "Copy"}
-                </button>
-                <button
-                  type="button"
-                  onClick={onDownload}
-                  disabled={!licenseKey}
-                  className="rounded-full border border-[#DDE3EE] bg-white px-4 py-2 text-xs font-semibold text-[#5F6B82]"
-                >
-                  Download .lic
-                </button>
-                {copyStatus === "error" ? (
-                  <span className="self-center text-[11px] text-red-600">Copy failed. Please copy manually.</span>
-                ) : null}
-              </div>
-              {apiEnvError ? (
-                <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
-                  {apiEnvError}
-                </p>
-              ) : null}
-            </form>
-          </CollapsibleCard>
 
           {/* Change Password Card - Least commonly used */}
           <CollapsibleCard
