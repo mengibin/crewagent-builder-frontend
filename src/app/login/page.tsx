@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { useState } from "react";
 
-import { getApiBaseUrl, postJson } from "@/lib/api-client";
+import { getApiBaseUrl, getJson, postJson } from "@/lib/api-client";
 import { getAccessToken, setAccessToken, setUser } from "@/lib/auth";
 
 type Tab = "login" | "register";
@@ -54,6 +54,14 @@ type RegisterResponseData = {
   user: { id: number; email: string; username: string };
 };
 
+type LicenseCheckData = {
+  valid: boolean;
+  status: string;
+  machineId: string;
+  expiresAt: number | null;
+  message: string;
+};
+
 export default function LoginPage() {
   const router = useRouter();
   const { error: apiEnvError } = getApiBaseUrl();
@@ -73,6 +81,10 @@ export default function LoginPage() {
   const [registerSubmitError, setRegisterSubmitError] = useState<string | null>(null);
   const [isRegisterSubmitting, setIsRegisterSubmitting] = useState(false);
 
+  const [licenseCheck, setLicenseCheck] = useState<LicenseCheckData | null>(null);
+  const [licenseLoading, setLicenseLoading] = useState(true);
+  const [machineIdCopied, setMachineIdCopied] = useState(false);
+
   const isLogin = activeTab === "login";
   const heroTitle = isLogin ? "Log in to CrewAgent Builder" : "Create your CrewAgent account";
   const heroSub = isLogin
@@ -86,8 +98,18 @@ export default function LoginPage() {
   useEffect(() => {
     if (getAccessToken()) {
       router.replace("/dashboard");
+      return;
     }
+    // Check license status on mount
+    getJson<LicenseCheckData>("/license/check")
+      .then((res) => {
+        if (res.data) setLicenseCheck(res.data);
+      })
+      .catch(() => { /* ignore */ })
+      .finally(() => setLicenseLoading(false));
   }, [router]);
+
+  const licenseInvalid = licenseCheck !== null && !licenseCheck.valid;
 
   async function onLoginSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -215,6 +237,45 @@ export default function LoginPage() {
             </span>
             <h1 className="text-3xl font-semibold leading-tight text-[#1F2937]">{heroTitle}</h1>
             <p className="text-sm text-[#5F6B82]">{heroSub}</p>
+
+            {!licenseLoading && licenseInvalid ? (
+              <div className="rounded-[24px] border border-amber-300 bg-amber-50 p-6 shadow-[0_10px_30px_rgba(15,23,42,0.10)]">
+                <div className="flex items-center gap-2 text-amber-800">
+                  <svg viewBox="0 0 24 24" className="h-5 w-5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <p className="text-sm font-semibold">License 无效</p>
+                </div>
+                <p className="mt-2 text-sm text-amber-700">{licenseCheck?.message}</p>
+                <p className="mt-1 text-xs text-amber-600">状态: {licenseCheck?.status}</p>
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-amber-800">机器码 (Machine ID)</p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <code className="flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs text-amber-900 break-all font-mono select-all">
+                      {licenseCheck?.machineId}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (licenseCheck?.machineId) {
+                          navigator.clipboard.writeText(licenseCheck.machineId);
+                          setMachineIdCopied(true);
+                          setTimeout(() => setMachineIdCopied(false), 2000);
+                        }
+                      }}
+                      className="flex-shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                    >
+                      {machineIdCopied ? "已复制" : "复制"}
+                    </button>
+                  </div>
+                  <p className="mt-2 text-xs text-amber-600">
+                    请将机器码提供给技术支持以获取 License 文件。
+                  </p>
+                </div>
+              </div>
+            ) : null}
 
             <div className="rounded-[24px] border border-[#DDE3EE] bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.10)]">
               {apiEnvError ? (
