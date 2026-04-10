@@ -2182,7 +2182,7 @@ export default function EditorPage() {
           </section>
 
           {inspectorOpen ? (
-            <aside className="w-[640px] shrink-0 space-y-4">
+            <aside className="nokey w-[640px] shrink-0 space-y-4">
               <div className="rounded-3xl border border-[#DDE3EE] bg-white p-4 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
                 <div className="flex items-center justify-between gap-2">
                   <h2 className="text-sm font-semibold text-[#1F2937]">Inspector</h2>

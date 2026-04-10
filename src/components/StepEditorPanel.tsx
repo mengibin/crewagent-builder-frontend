@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 
 import { MarkdownEditorModal } from "@/components/MarkdownEditorModal";
 import { toRuntimeAssetPath, type AssetListItem } from "@/lib/assets-v11";
@@ -82,6 +82,7 @@ function TagInput(props: {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            e.stopPropagation();
             if (e.key === "Enter" || e.key === ",") {
               e.preventDefault();
               addDraft();
@@ -89,7 +90,7 @@ function TagInput(props: {
           }}
           onBlur={() => addDraft()}
           placeholder={props.placeholder}
-          className="w-full border-0 bg-transparent p-0 text-sm text-zinc-900 outline-none placeholder:text-zinc-400"
+          className="nokey w-full border-0 bg-transparent p-0 text-sm text-zinc-900 outline-none placeholder:text-zinc-400"
         />
       </div>
     </div>
@@ -134,6 +135,7 @@ export function StepEditorPanel(props: StepEditorPanelProps) {
   });
   const [activeSection, setActiveSection] = useState<keyof StepSections | null>(null);
   const [assetInsertPath, setAssetInsertPath] = useState<string>("");
+  const variableKeysTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const parseResult = useMemo(() => parseStepMarkdown(content), [content]);
   const stepData = parseResult.success ? parseResult.data ?? null : null;
@@ -176,11 +178,40 @@ export function StepEditorPanel(props: StepEditorPanelProps) {
     });
   };
 
+  const handleVariableKeysChange = (rawValue: string) => {
+    handleFrontmatterChange(
+      "setsVariables",
+      rawValue
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => Boolean(line)),
+    );
+  };
+
+  const insertVariableKeyLineBreak = () => {
+    const el = variableKeysTextareaRef.current;
+    if (!el) return;
+
+    const value = el.value ?? "";
+    const selectionStart = el.selectionStart ?? value.length;
+    const selectionEnd = el.selectionEnd ?? value.length;
+    const next = `${value.slice(0, selectionStart)}\n${value.slice(selectionEnd)}`;
+    handleVariableKeysChange(next);
+
+    requestAnimationFrame(() => {
+      const target = variableKeysTextareaRef.current;
+      if (!target) return;
+      const cursor = selectionStart + 1;
+      target.focus();
+      target.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const toggleSection = (section: string) => setExpanded((prev) => ({ ...prev, [section]: !prev[section] }));
 
   if (parseError || !stepData) {
     return (
-      <div className="space-y-3">
+      <div className="nokey space-y-3">
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
           <p className="font-medium">Unable to parse Step file</p>
           <p className="mt-1 text-amber-800">{parseError || "Unknown error"}</p>
@@ -190,7 +221,7 @@ export function StepEditorPanel(props: StepEditorPanelProps) {
           value={content}
           onChange={(e) => onChange(e.target.value)}
           placeholder="Step content..."
-          className="mt-3 min-h-64 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 font-mono text-xs leading-6 outline-none focus:border-zinc-400"
+          className="nokey mt-3 min-h-64 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 font-mono text-xs leading-6 outline-none focus:border-zinc-400"
         />
       </div>
     );
@@ -231,7 +262,7 @@ export function StepEditorPanel(props: StepEditorPanelProps) {
       );
 
   return (
-    <div className="space-y-4">
+    <div className="nokey space-y-4">
       {activeSection ? (
         <MarkdownEditorModal
           title={modalTitle}
@@ -435,17 +466,26 @@ export function StepEditorPanel(props: StepEditorPanelProps) {
       <Section title="Variable keys" expanded={expanded.variables} onToggle={() => toggleSection("variables")}>
         <div className="space-y-2">
           <textarea
+            ref={variableKeysTextareaRef}
             value={(stepData.frontmatter.setsVariables ?? []).join("\n")}
-            onChange={(e) =>
-              handleFrontmatterChange(
-                "setsVariables",
-                e.target.value
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .filter((line) => Boolean(line)),
-              )
-            }
-            className="min-h-20 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
+            onChange={(e) => handleVariableKeysChange(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+
+              if (
+                e.key !== "Enter" ||
+                e.altKey ||
+                e.ctrlKey ||
+                e.metaKey ||
+                e.nativeEvent.isComposing
+              ) {
+                return;
+              }
+
+              e.preventDefault();
+              insertVariableKeyLineBreak();
+            }}
+            className="nokey min-h-20 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2 text-sm outline-none focus:border-zinc-400"
             placeholder="storyKey\nepicNum\n..."
           />
           {props.onSyncWorkflowVariables ? (

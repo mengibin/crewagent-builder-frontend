@@ -35,19 +35,22 @@ export function MarkdownPreview(props: { markdown: string; emptyText?: string })
           hr: ({ node: _node, ...p }) => ((void _node), <hr {...p} className="border-zinc-200" />),
           code: ({
             node: _node,
-            inline,
             className,
             ...p
           }: React.ComponentPropsWithoutRef<"code"> & { inline?: boolean; node?: unknown }) =>
             ((void _node),
-            inline ? (
-              <code {...p} className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-[12px] text-zinc-900" />
-            ) : (
-              <code {...p} className={`${className ?? ""} font-mono text-[12px] text-zinc-50`} />
-            )),
+            <code
+              {...p}
+              className={[className, "rounded bg-zinc-100 px-1 py-0.5 font-mono text-[12px] text-zinc-900"]
+                .filter(Boolean)
+                .join(" ")}
+            />),
           pre: ({ node: _node, ...p }) =>
             ((void _node),
-            <pre {...p} className="overflow-auto rounded-xl bg-zinc-950 p-3 text-[12px] leading-5 text-zinc-50" />),
+            <pre
+              {...p}
+              className="overflow-auto rounded-xl bg-zinc-950 p-3 text-[12px] leading-5 text-zinc-50 [&_code]:rounded-none [&_code]:bg-transparent [&_code]:px-0 [&_code]:py-0 [&_code]:text-inherit"
+            />),
           table: ({ node: _node, ...p }) =>
             ((void _node),
             (
