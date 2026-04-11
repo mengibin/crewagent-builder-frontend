@@ -15,6 +15,7 @@ import workflowGraphSchemaV11 from "@/lib/bmad-spec/v1.1/workflow-graph.schema.j
 import { getApiBaseUrl, getJson, putJson } from "@/lib/api-client";
 import { useRequireAuth } from "@/lib/use-require-auth";
 import { isValidAgentId, uniqueAgentId } from "@/lib/utils";
+import { analyzeWorkflowGraph } from "@/lib/workflow-graph-analysis";
 import { buildWorkflowGraphV11 } from "@/lib/workflow-graph-v11";
 import { parseStepMarkdown, serializeStepMarkdown, type StepSections } from "@/lib/step-parser";
 import { StepEditorPanel } from "@/components/StepEditorPanel";
@@ -1559,16 +1560,21 @@ export default function EditorPage() {
     });
   }
 
+  const graphAnalysis = useMemo(
+    () =>
+      analyzeWorkflowGraph({
+        nodes: nodes.map((node) => ({ id: node.id, type: node.type })),
+        edges: edges.map((edge) => ({ from: edge.source, to: edge.target })),
+      }),
+    [edges, nodes],
+  );
+
   const execution = useMemo(() => {
     const nodesById = new Map(nodes.map((n) => [n.id, n] as const));
-    const indegree = new Map<string, number>();
-    const outgoing = new Map<string, string[]>();
     const incomingCount = new Map<string, number>();
     const outgoingCount = new Map<string, number>();
 
     nodes.forEach((node) => {
-      indegree.set(node.id, 0);
-      outgoing.set(node.id, []);
       incomingCount.set(node.id, 0);
       outgoingCount.set(node.id, 0);
     });
@@ -1576,8 +1582,6 @@ export default function EditorPage() {
     edges.forEach((edge) => {
       if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) return;
 
-      outgoing.get(edge.source)?.push(edge.target);
-      indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
       incomingCount.set(edge.target, (incomingCount.get(edge.target) ?? 0) + 1);
       outgoingCount.set(edge.source, (outgoingCount.get(edge.source) ?? 0) + 1);
     });
@@ -1588,9 +1592,11 @@ export default function EditorPage() {
       return { orderedNodes: nodes, warnings, error: null };
     }
 
-    const startNodes = nodes.filter((n) => (indegree.get(n.id) ?? 0) === 0);
-    if (startNodes.length !== 1) {
+    if (graphAnalysis.startNodeIds.length > 1) {
       warnings.push("Detected multiple/no start nodes: order may not be unique (MVP uses topological-sort preview).");
+    }
+    if (graphAnalysis.startNodeIds.length === 0 && graphAnalysis.entryNodeId) {
+      warnings.push(`No start node with indegree 0: preview uses entryNodeId=${graphAnalysis.entryNodeId}.`);
     }
 
     const hasBranching = nodes.some(
@@ -1600,49 +1606,32 @@ export default function EditorPage() {
       warnings.push("Detected branching/merging: order may not be unique (MVP uses topological-sort preview).");
     }
 
-    const order: Node<WorkflowNodeData>[] = [];
-    const queue = startNodes.map((n) => n.id);
-    const nextIndegree = new Map(indegree);
-
-    while (queue.length) {
-      const id = queue.shift();
-      if (!id) break;
-      const node = nodesById.get(id);
-      if (!node) continue;
-      order.push(node);
-
-      for (const next of outgoing.get(id) ?? []) {
-        const value = (nextIndegree.get(next) ?? 0) - 1;
-        nextIndegree.set(next, value);
-        if (value === 0) {
-          queue.push(next);
-        }
-      }
+    if (graphAnalysis.cycleIssues.length) {
+      return {
+        orderedNodes: nodes,
+        warnings,
+        error: graphAnalysis.cycleIssues.map((issue) => issue.message).join(" "),
+      };
     }
 
-    if (order.length !== nodes.length) {
-      return { orderedNodes: nodes, warnings, error: "Cycle detected: remove cyclic edges before previewing." };
+    if (!graphAnalysis.entryNodeId) {
+      return {
+        orderedNodes: nodes,
+        warnings,
+        error: "Unable to determine entry node: add a start node or a decision-controlled loop entry.",
+      };
     }
 
-    return { orderedNodes: order, warnings, error: null };
-  }, [edges, nodes]);
+    const orderedNodes = graphAnalysis.orderedNodeIds
+      .map((id) => nodesById.get(id))
+      .filter((node): node is Node<WorkflowNodeData> => Boolean(node));
+
+    return { orderedNodes, warnings, error: null };
+  }, [edges, graphAnalysis, nodes]);
 
   const workflowMdPreview = useMemo(() => {
     const safeName = (workflow?.name ?? "Untitled Workflow").trim() || "Untitled Workflow";
-    const currentNodeId = (() => {
-      if (!nodes.length) return "";
-      if (!edges.length) return nodes.length === 1 ? nodes[0]?.id ?? "" : "";
-
-      const indegree = new Map<string, number>();
-      nodes.forEach((n) => indegree.set(n.id, 0));
-      edges.forEach((e) => {
-        if (!indegree.has(e.source) || !indegree.has(e.target)) return;
-        indegree.set(e.target, (indegree.get(e.target) ?? 0) + 1);
-      });
-
-      const startNodes = nodes.filter((n) => (indegree.get(n.id) ?? 0) === 0);
-      return startNodes.length === 1 ? startNodes[0]?.id ?? "" : "";
-    })();
+    const currentNodeId = graphAnalysis.entryNodeId;
 
     const stepsIndex = execution.orderedNodes.map((node) => {
       const file = (node.data?.stepFilePath ?? `steps/${node.id}.md`).trim() || `steps/${node.id}.md`;
@@ -1664,7 +1653,7 @@ export default function EditorPage() {
       "## Steps Index\n\n" +
       (stepsIndex.length ? `${stepsIndex.join("\n")}\n` : "")
     );
-  }, [edges, execution.orderedNodes, nodes, workflow?.name, workflowVariables]);
+  }, [execution.orderedNodes, graphAnalysis.entryNodeId, workflow?.name, workflowVariables]);
 
   const agentsJsonPreview = useMemo(() => {
     const raw = project?.agentsJson?.trim() || "[]";
@@ -1953,7 +1942,7 @@ export default function EditorPage() {
             <div className="flex flex-wrap items-center gap-2">
               {execution.error ? (
                 <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs text-red-700">
-                  Cannot save: cycle detected
+                  Cannot save
                 </span>
               ) : saveStatus === "saving" ? (
                 <span className="rounded-full border border-[#DDE3EE] bg-white px-2 py-0.5 text-xs text-[#5F6B82]">

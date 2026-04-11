@@ -1,3 +1,5 @@
+import { analyzeWorkflowGraph } from "./workflow-graph-analysis";
+
 export type WorkflowGraphV11NodeType = "step" | "decision" | "merge" | "end" | "subworkflow";
 
 export type WorkflowGraphV11Node = {
@@ -128,45 +130,22 @@ export function buildWorkflowGraphV11(params: {
     validEdges.push({ edge, idx });
   });
 
-  const indegree = new Map<string, number>();
-  const outgoing = new Map<string, string[]>();
-  nodeIds.forEach((id) => {
-    indegree.set(id, 0);
-    outgoing.set(id, []);
+  const analysis = analyzeWorkflowGraph({
+    nodes: nodeIds.map((id) => ({ id, type: nodesById.get(id)?.type })),
+    edges: validEdges.map(({ edge }) => ({ from: edge.source, to: edge.target })),
   });
+  analysis.cycleIssues.forEach((issue) => errors.push(issue.message));
 
-  validEdges.forEach(({ edge }) => {
-    outgoing.get(edge.source)?.push(edge.target);
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-  });
-
-  if (validEdges.length) {
-    const queue = nodeIds.filter((id) => (indegree.get(id) ?? 0) === 0);
-    const nextIndegree = new Map(indegree);
-    let visited = 0;
-
-    while (queue.length) {
-      const id = queue.shift();
-      if (!id) break;
-      visited += 1;
-      for (const to of outgoing.get(id) ?? []) {
-        const value = (nextIndegree.get(to) ?? 0) - 1;
-        nextIndegree.set(to, value);
-        if (value === 0) queue.push(to);
-      }
-    }
-
-    if (visited !== nodeIds.length) {
-      errors.push("Cycle detected: remove cyclic edges before generating workflow.graph.json.");
-    }
-  }
-
-  const startNodes = nodeIds.filter((id) => (indegree.get(id) ?? 0) === 0).sort((a, b) => a.localeCompare(b));
+  const startNodes = analysis.startNodeIds.slice().sort((a, b) => a.localeCompare(b));
   const entryNodeId = (() => {
     if (startNodes.length === 1) return startNodes[0] ?? "";
     if (startNodes.length > 1) {
       warnings.push(`Multiple entry nodes detected: chose entryNodeId=${startNodes[0]}`);
       return startNodes[0] ?? "";
+    }
+    if (analysis.entryNodeId) {
+      warnings.push(`No start node with indegree 0: chose entryNodeId=${analysis.entryNodeId} from a controlled cycle.`);
+      return analysis.entryNodeId;
     }
     return "";
   })();

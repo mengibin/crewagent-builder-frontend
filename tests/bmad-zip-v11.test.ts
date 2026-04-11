@@ -185,6 +185,83 @@ test("buildBmadZipBundleV11: blocks export when bmad.json.entry points to missin
   assert.ok(res.errors.some((e) => e.includes("bmad.json.entry")));
 });
 
+test("buildBmadZipBundleV11: exports a decision-controlled loop", async () => {
+  const { bmadJson, agentsJson } = buildSampleManifests();
+
+  const res = await buildBmadZipBundleV11({
+    projectName: "My Project",
+    bmadJson,
+    agentsJson,
+    workflows: [
+      {
+        id: 1,
+        name: "Main",
+        workflowMd: "x",
+        graphJson: JSON.stringify({
+          nodes: [
+            { id: "retry-check", type: "decision", data: { title: "Retry Check", agentId: "dev" } },
+            { id: "run-step", type: "step", data: { title: "Run Step", agentId: "dev" } },
+            { id: "done", type: "end", data: { title: "Done", agentId: "dev" } },
+          ],
+          edges: [
+            { source: "retry-check", target: "run-step", label: "retry", data: { isDefault: true } },
+            { source: "run-step", target: "retry-check", label: "loop" },
+            { source: "retry-check", target: "done", label: "done" },
+          ],
+        }),
+        stepFilesJson: JSON.stringify({
+          "steps/retry-check.md": "ok",
+          "steps/run-step.md": "ok",
+          "steps/done.md": "ok",
+        }),
+      },
+    ],
+  });
+
+  assert.deepEqual(res.errors, []);
+  assert.ok(res.zipBytes);
+
+  const zip = await JSZip.loadAsync(res.zipBytes);
+  const graphText = await zip.file("workflows/1/workflow.graph.json")!.async("string");
+  const graph = JSON.parse(graphText) as { entryNodeId: string };
+  assert.equal(graph.entryNodeId, "retry-check");
+});
+
+test("buildBmadZipBundleV11: blocks export when a decision cycle has no exit", async () => {
+  const { bmadJson, agentsJson } = buildSampleManifests();
+
+  const res = await buildBmadZipBundleV11({
+    projectName: "My Project",
+    bmadJson,
+    agentsJson,
+    workflows: [
+      {
+        id: 1,
+        name: "Main",
+        workflowMd: "x",
+        graphJson: JSON.stringify({
+          nodes: [
+            { id: "retry-check", type: "decision", data: { title: "Retry Check", agentId: "dev" } },
+            { id: "run-step", type: "step", data: { title: "Run Step", agentId: "dev" } },
+          ],
+          edges: [
+            { source: "retry-check", target: "run-step", label: "retry", data: { isDefault: true } },
+            { source: "retry-check", target: "retry-check", label: "wait" },
+            { source: "run-step", target: "retry-check", label: "loop" },
+          ],
+        }),
+        stepFilesJson: JSON.stringify({
+          "steps/retry-check.md": "ok",
+          "steps/run-step.md": "ok",
+        }),
+      },
+    ],
+  });
+
+  assert.equal(res.zipBytes, null);
+  assert.ok(res.errors.some((e) => e.includes("add an edge that exits the loop")));
+});
+
 test("buildBmadZipBundleV11: blocks export when stepFilesJson keys are not under steps/", async () => {
   const { bmadJson, agentsJson } = buildSampleManifests();
 
