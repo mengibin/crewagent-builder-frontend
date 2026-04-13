@@ -111,7 +111,7 @@ export function MarkdownEditorModal(props: MarkdownEditorModalProps) {
   }, [props]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="nokey fixed inset-0 z-[60] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-zinc-950/30" onClick={props.onClose} />
       <div className="relative flex h-[calc(100vh-2rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-lg">
         <div className="flex items-center justify-between gap-4 border-b border-zinc-200 bg-zinc-50 px-4 py-2">
@@ -160,7 +160,7 @@ export function MarkdownEditorModal(props: MarkdownEditorModalProps) {
               value={draft}
               onChange={(e) => updateDraft(e.target.value)}
               placeholder={props.placeholder}
-              className="min-h-0 flex-1 resize-none border-0 px-4 py-3 font-mono text-xs leading-6 text-zinc-900 outline-none"
+              className="nokey min-h-0 flex-1 resize-none border-0 px-4 py-3 font-mono text-xs leading-6 text-zinc-900 outline-none"
               autoFocus
             />
           </div>
