@@ -140,8 +140,8 @@ export function buildWorkflowGraphV11(params: {
   const entryNodeId = (() => {
     if (startNodes.length === 1) return startNodes[0] ?? "";
     if (startNodes.length > 1) {
-      warnings.push(`Multiple entry nodes detected: chose entryNodeId=${startNodes[0]}`);
-      return startNodes[0] ?? "";
+      errors.push(`Workflow graph must not have multiple start nodes with indegree 0; found ${startNodes.length}: ${startNodes.join(", ")}`);
+      return "";
     }
     if (analysis.entryNodeId) {
       warnings.push(`No start node with indegree 0: chose entryNodeId=${analysis.entryNodeId} from a controlled cycle.`);

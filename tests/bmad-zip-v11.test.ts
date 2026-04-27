@@ -227,6 +227,37 @@ test("buildBmadZipBundleV11: exports a decision-controlled loop", async () => {
   assert.equal(graph.entryNodeId, "retry-check");
 });
 
+test("buildBmadZipBundleV11: blocks export when graph has multiple start nodes", async () => {
+  const { bmadJson, agentsJson } = buildSampleManifests();
+
+  const res = await buildBmadZipBundleV11({
+    projectName: "My Project",
+    bmadJson,
+    agentsJson,
+    workflows: [
+      {
+        id: 1,
+        name: "Main",
+        workflowMd: "x",
+        graphJson: JSON.stringify({
+          nodes: [
+            { id: "collect", type: "step", data: { title: "Collect", agentId: "dev" } },
+            { id: "review", type: "step", data: { title: "Review", agentId: "dev" } },
+          ],
+          edges: [],
+        }),
+        stepFilesJson: JSON.stringify({
+          "steps/collect.md": "ok",
+          "steps/review.md": "ok",
+        }),
+      },
+    ],
+  });
+
+  assert.equal(res.zipBytes, null);
+  assert.ok(res.errors.some((e) => e.includes("multiple start nodes with indegree 0")));
+});
+
 test("buildBmadZipBundleV11: blocks export when a decision cycle has no exit", async () => {
   const { bmadJson, agentsJson } = buildSampleManifests();
 
