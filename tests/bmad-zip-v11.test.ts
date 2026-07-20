@@ -79,6 +79,48 @@ test("buildBmadZipBundleV11: builds multi-workflow zip and rewrites node.file", 
   assert.equal(graph.nodes[0]?.file, "workflows/1/steps/step-1.md");
 });
 
+test("buildBmadZipBundleV11: uses node.file from workflow graph as the step path", async () => {
+  const { bmadJson, agentsJson } = buildSampleManifests();
+
+  const res = await buildBmadZipBundleV11({
+    projectName: "My Project",
+    bmadJson,
+    agentsJson,
+    workflows: [
+      {
+        id: 1,
+        name: "Main",
+        workflowMd: "x",
+        graphJson: JSON.stringify({
+          nodes: [
+            {
+              id: "cost-calculation",
+              type: "step",
+              file: "steps/full-cost.md",
+              data: { title: "Full cost calculation", agentId: "dev" },
+            },
+          ],
+          edges: [],
+        }),
+        stepFilesJson: JSON.stringify({
+          "steps/full-cost.md": "---\nnodeId: cost-calculation\ntype: step\n---\n\nCalculate it.\n",
+        }),
+      },
+    ],
+  });
+
+  assert.deepEqual(res.errors, []);
+  assert.ok(res.zipBytes);
+
+  const zip = await JSZip.loadAsync(res.zipBytes);
+  assert.ok(zip.file("workflows/1/steps/full-cost.md"));
+
+  const graphText = await zip.file("workflows/1/workflow.graph.json")!.async("string");
+  const graph = JSON.parse(graphText) as { nodes: Array<{ id: string; file: string }> };
+  assert.equal(graph.nodes[0]?.id, "cost-calculation");
+  assert.equal(graph.nodes[0]?.file, "workflows/1/steps/full-cost.md");
+});
+
 test("buildBmadZipBundleV11: blocks export when a node references missing step file", async () => {
   const { bmadJson, agentsJson } = buildSampleManifests();
 

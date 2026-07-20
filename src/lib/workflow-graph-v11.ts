@@ -34,12 +34,14 @@ export type WorkflowGraphV11 = {
 export type BuilderGraphNode = {
   id: string;
   type?: unknown;
+  file?: unknown;
   data?: {
     title?: unknown;
     agentId?: unknown;
     inputs?: unknown;
     outputs?: unknown;
     instructions?: unknown;
+    stepFilePath?: unknown;
   };
 };
 
@@ -174,10 +176,13 @@ export function buildWorkflowGraphV11(params: {
       const inputs = parseStringList(node?.data?.inputs);
       const outputs = parseStringList(node?.data?.outputs);
 
+      const fileRaw = node?.file ?? node?.data?.stepFilePath;
+      const file = typeof fileRaw === "string" && fileRaw.trim() ? fileRaw.trim() : `steps/${id}.md`;
+
       return {
         id,
         type,
-        file: `steps/${id}.md`,
+        file,
         ...(title ? { title } : {}),
         ...(agentId ? { agentId } : {}),
         ...(inputs.length ? { inputs } : {}),
